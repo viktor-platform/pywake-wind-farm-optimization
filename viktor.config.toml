@@ -1,0 +1,4 @@
+app_type = 'simple'
+# assets_path = 'assets'
+# packages = []
+python_version = '3.12'  # '3.9' | '3.10' | '3.11' | '3.12'
