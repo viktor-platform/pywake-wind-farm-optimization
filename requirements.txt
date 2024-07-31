@@ -1,1 +1,5 @@
 viktor==14.13.0
+py-wake==2.6.3
+topfarm==2.3.5
+scipy==1.14.0
+setuptools==71.1.0
