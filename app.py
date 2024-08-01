@@ -6,6 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 from py_wake import HorizontalGrid
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80, Hornsrev1Site
@@ -13,8 +14,9 @@ from py_wake.examples.data.iea37 import IEA37_WindTurbines, IEA37Site
 from py_wake.examples.data.lillgrund import SWT23, LillgrundSite
 from py_wake.examples.data.ParqueFicticio import ParqueFicticioSite
 from py_wake.literature.gaussian_models import Blondel_Cathelain_2020
-from py_wake.turbulence_models import CrespoHernandez
 from py_wake.literature.iea37_case_study1 import IEA37CaseStudy1
+from py_wake.site import XRSite
+from py_wake.turbulence_models import CrespoHernandez
 from py_wake.utils.gradients import autograd, cs, fd
 from py_wake.utils.plotting import setup_plot
 from py_wake.wind_farm_models.wind_farm_model import (
@@ -33,7 +35,10 @@ from topfarm.constraint_components.spacing import SpacingConstraint
 from topfarm.cost_models.py_wake_wrapper import PyWakeAEPCostModelComponent
 from topfarm.easy_drivers import EasyScipyOptimizeDriver
 from viktor import File, ViktorController
+from viktor.errors import UserError
+from viktor.geometry import Point, Polygon, RDWGSConverter
 from viktor.parametrization import (  # FunctionLookup,; Lookup,
+    GeoPolygonField,
     LineBreak,
     NumberField,
     OptimizationButton,
@@ -45,6 +50,8 @@ from viktor.parametrization import (  # FunctionLookup,; Lookup,
 from viktor.result import ImageResult, OptimizationResult, OptimizationResultElement
 from viktor.views import ImageView, MapPoint, MapPolygon, MapResult, MapView
 
+from gwa_reader import get_gwc_data
+
 #############
 # CONSTANTS #
 #############
@@ -52,8 +59,8 @@ ROOT = Path(__file__).parent
 IMAGE_DPI = 800
 
 # windfarm sites
-SITES = ["Horns Rev", "IEA37", "Parque Ficticio", "Lillgrund Wind Farm"]
-SITE_CLASSES = [Hornsrev1Site, IEA37Site, ParqueFicticioSite, LillgrundSite]
+SITES = ["Horns Rev", "Parque Ficticio", "Lillgrund Wind Farm"]
+SITE_CLASSES = [Hornsrev1Site, ParqueFicticioSite, LillgrundSite]
 SITE_CLASSES_DICT = {site: site_cls for site, site_cls in zip(SITES, SITE_CLASSES)}
 
 # wind turbines
@@ -63,17 +70,21 @@ TURBINE_CLASSES_DICT = {
     turbine: turbine_cls for turbine, turbine_cls in zip(TURBINES, TURBINE_CLASSES)
 }
 
-# def GET_WIND_DIRECTION_STEP_SIZE(wind_direction_resolution):
-#     return 360 / wind_direction_resolution
+# model constants
+ROUGHNESS_INDEX = 0  # we assume a flat ground (reasonable for off-shore farms)
+WIND_MEASUREMENT_HEIGHT = 100.0  # m (for convenience we fix this height. Not accurate as turbine hub heights may vary)
+TURBULENCE_INTENSITY = 0.1
 
 
 class Parametrization(ViktorParametrization):
+    # TODO: Process advice from Stijn & Matthijs about making things sound less technical: "Make things sound sexy..."
     assemble = Step("Assemble wind farm", views=["site_locations", "wind_rose"])
     assemble.welcome_text = Text("# Welcome to wind farm modelling with PyWake! 💨")
-    assemble.site = OptionField("Choose site", options=SITES, default="IEA37")
+    assemble.polygon = GeoPolygonField("Mark site")
+    assemble.site = OptionField("Choose site", options=SITES, default=SITES[0])
 
     assemble.turbine = OptionField(
-        "Choose turbine type", options=TURBINES, default="V80"
+        "Choose turbine type", options=TURBINES, default=TURBINES[0]
     )
     assemble.number_of_turbines = NumberField(
         "Specify number of turbines", default=9, min=1, max=100, visible=False
@@ -103,7 +114,7 @@ class Parametrization(ViktorParametrization):
         suffix="m/s",
         variant="slider",
         step=0.1,
-        default=10
+        default=10,
     )
 
     optimize = Step("Optimize positions", views="optimal_aep_per_turbine")
@@ -121,18 +132,15 @@ class Controller(ViktorController):
     #########
     @MapView("Site map", duration_guess=1)
     def site_locations(self, params, **kwargs):
-        # TODO: implement site locations. map Below is just placeholder
-        # Create some points using coordinates
-        markers = [
-            MapPoint(25.7617, -80.1918, description="Miami"),
-            MapPoint(18.4655, -66.1057, description="Puerto Rico"),
-            MapPoint(32.3078, -64.7505, description="Bermudas"),
-        ]
-        # Create a polygon
-        polygon = MapPolygon(markers)
+        features = []
 
-        # Visualize map
-        features = markers + [polygon]
+        # determine center of polygon
+        if (polygon := params.assemble.polygon) is not None:
+            features += [
+                MapPolygon.from_geo_polygon(polygon),
+                MapPoint(*self.get_windfarm_centroid(params, **kwargs)),
+            ]
+
         return MapResult(features)
 
     @ImageView("Wind rose", duration_guess=1)
@@ -174,11 +182,7 @@ class Controller(ViktorController):
         plt.xlabel("x [m]")
         plt.ylabel("y [m]")
         png = File()
-        fig.savefig(
-            png.source,
-            format="png",
-            dpi=IMAGE_DPI
-        )
+        fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
         return ImageResult(png)
 
@@ -197,7 +201,7 @@ class Controller(ViktorController):
         """
         function to create a topfarm problem, following the elements of OpenMDAO architecture
         """
-        windfarm_model = Controller.get_windfarm_model(params)
+        windfarm_model = Controller.get_windfarm_model(params, **kwargs)
         x, y = windfarm_model.site.initial_position.T
         boundary_constr = [
             XYBoundaryConstraint(np.array([x, y]).T),
@@ -236,20 +240,54 @@ class Controller(ViktorController):
     ##############
     # SUPPORTING #
     ##############
+
     def get_windfarm_model(self, params, **kwargs) -> PyWakeWindFarmModel:
         """
         Setup default windfarm to some initial state.
         """
-        # TODO: use params to select the model
-        site = IEA37Site(
-            params.assemble.number_of_turbines
-        )  # TODO: figure out a way to make number of wind turbines variable
-        site.default_wd = np.linspace(
-            0, 360, params.assemble.wind_direction_resolution, endpoint=False
+        wind_turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]()
+
+        # weibull parameters
+        wind_data = get_gwc_data(*self.get_windfarm_centroid(params, **kwargs))
+        heights = list(wind_data.get_index("height"))
+        try:
+            height_index = heights.index(WIND_MEASUREMENT_HEIGHT)
+        except ValueError:
+            UserError("height not avalaible at this site")
+
+        f = wind_data.data_vars.get("frequency")[ROUGHNESS_INDEX].data
+        A = wind_data.data_vars.get("A")[ROUGHNESS_INDEX, height_index].data
+        k = wind_data.data_vars.get("k")[ROUGHNESS_INDEX, height_index].data
+
+        # default wind directions
+        wind_directions = np.linspace(0, 360, 12, endpoint=False)
+
+        # assemble site
+        site = XRSite(
+            ds=xr.Dataset(
+                data_vars={
+                    "Sector_frequency": ("wd", f),
+                    "Weibull_A": ("wd", A),
+                    "Weibull_k": ("wd", k),
+                    "TI": TURBULENCE_INTENSITY,
+                },
+                coords={"wd": wind_directions},
+            )
         )
-        wind_turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]
-        return Blondel_Cathelain_2020(site, wind_turbine(), turbulenceModel=CrespoHernandez())
-        # return Bastankhah_PorteAgel_2014(site, windTurbines, k=0.0324555)
+
+        # most recent model from literature with recommended turbulence model
+        return Blondel_Cathelain_2020(
+            site, wind_turbine, turbulenceModel=CrespoHernandez()
+        )
+
+    def get_windfarm_centroid(self, params, **kwargs):
+        # determine center of wind farm polygon
+        if (polygon := params.assemble.polygon) is not None:
+            points = [Point(*point.rd) for point in polygon.points]
+            center = Polygon(points).centroid
+            return RDWGSConverter.from_rd_to_wgs(center)
+        else:
+            raise UserError("First specify wind farm polygon")
 
     @staticmethod
     def calculate_windfarm_aep(
