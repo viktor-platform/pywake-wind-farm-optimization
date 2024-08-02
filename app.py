@@ -1,6 +1,3 @@
-from cProfile import label
-from locale import normalize
-from math import remainder
 from warnings import filterwarnings
 
 filterwarnings("ignore", category=DeprecationWarning)
@@ -14,38 +11,29 @@ from matplotlib.path import Path as MPLPath
 from py_wake import HorizontalGrid
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80, Hornsrev1Site
-from py_wake.examples.data.iea37 import IEA37_WindTurbines, IEA37Site
 from py_wake.examples.data.lillgrund import SWT23, LillgrundSite
 from py_wake.examples.data.ParqueFicticio import ParqueFicticioSite
 from py_wake.literature.gaussian_models import Blondel_Cathelain_2020
-from py_wake.literature.iea37_case_study1 import IEA37CaseStudy1
 from py_wake.site import XRSite
 from py_wake.turbulence_models import CrespoHernandez
-from py_wake.utils.gradients import autograd, cs, fd
+from py_wake.utils.gradients import autograd
 from py_wake.utils.plotting import setup_plot
-from py_wake.wind_farm_models.wind_farm_model import (
-    SimulationResult as PyWakeSimulationResult,
-)
 from py_wake.wind_farm_models.wind_farm_model import (
     WindFarmModel as PyWakeWindFarmModel,
 )
-from scipy.optimize import least_squares
-from shapely import MultiPoint
 from shapely.geometry import Polygon as ShapelyPolygon
 from topfarm._topfarm import TopFarmProblem
-from topfarm.constraint_components.boundary import (
-    CircleBoundaryConstraint,
-    XYBoundaryConstraint,
-)
+from topfarm.constraint_components.boundary import XYBoundaryConstraint
 from topfarm.constraint_components.spacing import SpacingConstraint
 from topfarm.cost_models.py_wake_wrapper import PyWakeAEPCostModelComponent
 from topfarm.easy_drivers import EasyScipyOptimizeDriver
+from topfarm.plotting import XYPlotComp
 from viktor import File, ViktorController
+from viktor.core import Storage
 from viktor.errors import UserError
 from viktor.geometry import Point, Polygon, RDWGSConverter
-from viktor.parametrization import (  # FunctionLookup,; Lookup,
+from viktor.parametrization import (
     GeoPolygonField,
-    LineBreak,
     NumberField,
     OptimizationButton,
     OptionField,
@@ -71,7 +59,7 @@ SITE_CLASSES_DICT = {site: site_cls for site, site_cls in zip(SITES, SITE_CLASSE
 
 # wind turbines
 TURBINES = ["V80", "IEA37", "DTU10MW", "SWT 2.3"]
-TURBINE_CLASSES = [V80, IEA37_WindTurbines, DTU10MW, SWT23]
+TURBINE_CLASSES = [V80, DTU10MW, SWT23]
 TURBINE_CLASSES_DICT = {
     turbine: turbine_cls for turbine, turbine_cls in zip(TURBINES, TURBINE_CLASSES)
 }
@@ -112,12 +100,9 @@ class Parametrization(ViktorParametrization):
         "number of wind speed bins", variant="slider", min=2, max=4, default=4
     )
 
-    inspect = Step("Inspect wakes", views="wake_plot")
+    inspect = Step("Inspect wakes", views=["wake_plot", "optimized_positions"])
     inspect.number_of_turbines = NumberField(
-        "number of turbines",
-        default=9,
-        min=1,
-        max=100,
+        "number of turbines", default=9, min=1, max=100, visible=False
     )
     inspect.turbine_spacing = NumberField(
         "minimum spacing between turbines",
@@ -136,9 +121,6 @@ class Parametrization(ViktorParametrization):
         variant="slider",
         step=1,
         default=270,
-        # step=FunctionLookup(
-        #     GET_WIND_DIRECTION_STEP_SIZE, Lookup("assemble.wind_direction_resolution")
-        # )
     )
     inspect.wind_speed = NumberField(
         "Wind speed",
@@ -149,11 +131,11 @@ class Parametrization(ViktorParametrization):
         step=0.1,
         default=10,
     )
-
-    optimize = Step("Optimize positions", views="optimal_aep_per_turbine")
-    optimize.positions = OptimizationButton(
+    inspect.optimize_positions = OptimizationButton(
         "Optimize turbine positions", "optimize_turbine_positions", longpoll=True
     )
+
+    optimize = Step("optimize turbine type", views="optimal_aep_per_turbine")
 
 
 class Controller(ViktorController):
@@ -234,7 +216,15 @@ class Controller(ViktorController):
         plt.close()
         return ImageResult(png)
 
-    @ImageView("Wake plot", duration_guess=1)
+    @ImageView("Optimized positions", duration_guess=5)
+    def optimized_positions(self, params, **kwargs):
+        storage = Storage()
+        if "optimized_positions_plot" not in storage.list(scope="entity").keys():
+            raise UserError("First optimize positions")
+        png = storage.get("optimized_positions_plot", scope="entity")
+        return ImageResult(png)
+
+    @ImageView("aep per turbine", duration_guess=1)
     def optimal_aep_per_turbine(self, params, **kwargs):
         png = File().from_path(ROOT / "lib" / "optimization_functionality_sample.png")
         return ImageResult(png)
@@ -294,11 +284,21 @@ class Controller(ViktorController):
         wind_farm = self.get_wind_farm_model(params)
         site = wind_farm.site
 
+        # optimized positions plot component
+        optimized_positions_fig, ax = plt.subplots()
+        plot_component = XYPlotComp(ax=ax)
+
         # construct top farm problem
-        topfarm_problem = self.get_topfarm_problem(params, wind_farm)
+        topfarm_problem = self.get_topfarm_problem(params, wind_farm, plot_component)
 
         # perform optimization routine (~ 60s)
         cost, state, recorder = topfarm_problem.optimize(disp=True)
+
+        # save optimized positions plot
+        png = File()
+        optimized_positions_fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
+        plt.close(optimized_positions_fig)
+        Controller._save_file_to_storage("optimized_positions_plot", png)
 
         # convergence info
         t, aep = [recorder[v] for v in ["timestamp", "AEP"]]
@@ -310,28 +310,39 @@ class Controller(ViktorController):
         n_ws = len(site.default_ws)
 
         # convergence results
-        results = []
-        output_headers = {}
-        print("AEP ", aep)
+        results = [
+            OptimizationResultElement(
+                params, {"time": round(_t - t[0], 2), "aep": round(_aep / 1e6, 3)}
+            )
+            for _t, _aep in zip(t, aep)
+        ]
+        output_headers = {"time": "Time (s)", "aep": "AEP (GWh)"}
 
         # convergence plot
-        fig = plt.figure()
-        plt.plot(t - t[0], aep, label="...")
+        convergence_fig = plt.figure()
+        plt.plot(t - t[0], aep / 1e6)
         setup_plot(
-            ylabel="AEP [GWh]",
-            xlabel="Time [s]",
+            ylabel="AEP (GWh)",
+            xlabel="Time (s)",
             title=f"{n_wt} wind turbines, {n_wd} wind directions, {n_ws} wind speeds",
         )
         plt.ticklabel_format(useOffset=False)
         png = File()
-        fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
-        plt.close()
+        convergence_fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
+        plt.close(convergence_fig)
         image = ImageResult(png)
 
         return OptimizationResult(results, output_headers=output_headers, image=image)
 
     def get_topfarm_problem(
-        self, params, wind_farm, grad_method=autograd, maxiter=4, n_cpu=1, **kwargs
+        self,
+        params,
+        wind_farm,
+        plot_component,
+        grad_method=autograd,
+        maxiter=4,
+        n_cpu=1,
+        **kwargs,
     ) -> TopFarmProblem:
         """
         function to create a topfarm problem, following the elements of OpenMDAO architecture
@@ -355,6 +366,7 @@ class Controller(ViktorController):
                 boundary_constr,
                 SpacingConstraint(min_spacing=self._get_turbine_spacing(params)),
             ],
+            plot_comp=plot_component,
         )
 
     ##############
@@ -422,3 +434,10 @@ class Controller(ViktorController):
         turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]()
         diameter = turbine.diameter()
         return diameter * params.inspect.turbine_spacing
+
+    @staticmethod
+    def _save_file_to_storage(key, file):
+        storage = Storage()
+        if key in storage.list(scope="entity").keys():
+            storage.delete(key, scope="entity")
+        storage.set(key, file, scope="entity")
