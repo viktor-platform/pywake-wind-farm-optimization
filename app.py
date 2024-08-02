@@ -1,3 +1,6 @@
+from cProfile import label
+from locale import normalize
+from math import remainder
 from warnings import filterwarnings
 
 filterwarnings("ignore", category=DeprecationWarning)
@@ -7,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from matplotlib.path import Path as MPLPath
 from py_wake import HorizontalGrid
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80, Hornsrev1Site
@@ -26,6 +30,8 @@ from py_wake.wind_farm_models.wind_farm_model import (
     WindFarmModel as PyWakeWindFarmModel,
 )
 from scipy.optimize import least_squares
+from shapely import MultiPoint
+from shapely.geometry import Polygon as ShapelyPolygon
 from topfarm._topfarm import TopFarmProblem
 from topfarm.constraint_components.boundary import (
     CircleBoundaryConstraint,
@@ -76,6 +82,16 @@ WIND_MEASUREMENT_HEIGHT = 100.0  # m (for convenience we fix this height. Not ac
 TURBULENCE_INTENSITY = 0.1
 
 
+def get_divisors(n, min=5):
+    bin_nums = np.arange(5, n + 1)
+    remainders = np.remainder(n, bin_nums)
+    mask = remainders == 0
+    return bin_nums[mask].tolist()
+
+
+WIND_BIN_NUMS = get_divisors(360)
+
+
 class Parametrization(ViktorParametrization):
     # TODO: Process advice from Stijn & Matthijs about making things sound less technical: "Make things sound sexy..."
     assemble = Step("Assemble wind farm", views=["site_locations", "wind_rose"])
@@ -84,17 +100,34 @@ class Parametrization(ViktorParametrization):
     assemble.site = OptionField("Choose site", options=SITES, default=SITES[0])
 
     assemble.turbine = OptionField(
-        "Choose turbine type", options=TURBINES, default=TURBINES[0]
-    )
-    assemble.number_of_turbines = NumberField(
-        "Specify number of turbines", default=9, min=1, max=100, visible=False
+        "turbine type", options=TURBINES, default=TURBINES[0]
     )
     assemble.wind_rose_header = Text("# Wind Rose")
-    assemble.wind_direction_resolution = NumberField(
-        "Specify number of wind direction bins", default=360, min=5
+    assemble.number_wind_directions = OptionField(
+        "number of wind direction bins",
+        options=WIND_BIN_NUMS,
+        default=WIND_BIN_NUMS[-1],
+    )
+    assemble.number_wind_speeds = NumberField(
+        "number of wind speed bins", variant="slider", min=2, max=4, default=4
     )
 
     inspect = Step("Inspect wakes", views="wake_plot")
+    inspect.number_of_turbines = NumberField(
+        "number of turbines",
+        default=9,
+        min=1,
+        max=100,
+    )
+    inspect.turbine_spacing = NumberField(
+        "minimum spacing between turbines",
+        default=7,
+        min=2,
+        max=15,
+        suffix="turbine diameters",
+        variant="slider",
+        step=1,
+    )
     inspect.wind_direction = NumberField(
         "Wind direction",
         min=0,
@@ -109,7 +142,7 @@ class Parametrization(ViktorParametrization):
     )
     inspect.wind_speed = NumberField(
         "Wind speed",
-        min=0,
+        min=4,
         max=30,
         suffix="m/s",
         variant="slider",
@@ -119,7 +152,7 @@ class Parametrization(ViktorParametrization):
 
     optimize = Step("Optimize positions", views="optimal_aep_per_turbine")
     optimize.positions = OptimizationButton(
-        "Optimize turbine positions", "optimze_turbine_positions", longpoll=True
+        "Optimize turbine positions", "optimize_turbine_positions", longpoll=True
     )
 
 
@@ -134,25 +167,27 @@ class Controller(ViktorController):
     def site_locations(self, params, **kwargs):
         features = []
 
-        # determine center of polygon
         if (polygon := params.assemble.polygon) is not None:
             features += [
                 MapPolygon.from_geo_polygon(polygon),
-                MapPoint(*self.get_windfarm_centroid(params, **kwargs)),
             ]
+            centroid = self._get_windfarm_centroid(params)
+            lat, lon = RDWGSConverter.from_rd_to_wgs(centroid)
+            features += [MapPoint(lat, lon)]
 
         return MapResult(features)
 
     @ImageView("Wind rose", duration_guess=1)
     def wind_rose(self, params, **kwargs):
-        windfarm = self.get_windfarm_model(params, **kwargs)
+        windfarm = self.get_wind_farm_model(params, **kwargs)
 
         # wind rose plot
         fig = plt.figure()
         png = File()
-        windspeed_bins = np.arange(0, 41, 5)
-        print(windspeed_bins)
-        _ = windfarm.site.plot_wd_distribution(n_wd=360)  # TODO: add height option?
+        _ = windfarm.site.plot_wd_distribution(
+            n_wd=params.assemble.number_wind_directions,
+            ws_bins=params.assemble.number_wind_speeds + 1,
+        )  # TODO: add height option?
 
         fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
@@ -160,8 +195,10 @@ class Controller(ViktorController):
 
     @ImageView("Wake plot", duration_guess=1)
     def wake_plot(self, params, **kwargs):
-        windfarm = self.get_windfarm_model(params, **kwargs)
-        x, y = windfarm.site.initial_position.T
+        windfarm = self.get_wind_farm_model(params, **kwargs)
+
+        # initiliaze turbine positions
+        x, y = self._get_initial_turbine_positions(params)
 
         # windspeed and direction
         wind_direction = params.inspect.wind_direction
@@ -171,7 +208,7 @@ class Controller(ViktorController):
         windfarm_simulated = windfarm(x, y, wd=wind_direction, ws=wind_speed)
 
         # define flow map
-        grid = HorizontalGrid(x=None, y=None, resolution=100, extend=1)
+        grid = HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
         flow_map = windfarm_simulated.flow_map(
             grid=grid, wd=wind_direction, ws=wind_speed
         )
@@ -181,6 +218,17 @@ class Controller(ViktorController):
         flow_map.plot_wake_map()
         plt.xlabel("x [m]")
         plt.ylabel("y [m]")
+
+        # wind farm boundary
+        xb, yb = self._get_windfarm_boundary(params)
+        plt.plot(xb, yb)
+
+        # zoom to wind farm
+        minx, miny, maxx, maxy = self._get_buffer_bounds(params)
+        plt.xlim(minx, maxx)
+        plt.ylim(miny, maxy)
+
+        # save and close
         png = File()
         fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
@@ -191,64 +239,19 @@ class Controller(ViktorController):
         png = File().from_path(ROOT / "lib" / "optimization_functionality_sample.png")
         return ImageResult(png)
 
-    ################
-    # OPTIMIZATION #
-    ################
-    @staticmethod
-    def get_topfarm_problem_xy(
-        params, grad_method=autograd, maxiter=100, n_cpu=1, **kwargs
-    ) -> TopFarmProblem:
+    #########
+    # MODEL #
+    #########
+    def get_wind_farm_model(self, params, **kwargs) -> PyWakeWindFarmModel:
         """
-        function to create a topfarm problem, following the elements of OpenMDAO architecture
-        """
-        windfarm_model = Controller.get_windfarm_model(params, **kwargs)
-        x, y = windfarm_model.site.initial_position.T
-        boundary_constr = [
-            XYBoundaryConstraint(np.array([x, y]).T),
-            CircleBoundaryConstraint(
-                center=[0, 0], radius=np.round(np.hypot(x, y).max())
-            ),
-        ][int(isinstance(windfarm_model.site, IEA37Site))]
-
-        return TopFarmProblem(
-            design_vars={"x": x, "y": y},
-            cost_comp=PyWakeAEPCostModelComponent(
-                windFarmModel=windfarm_model,
-                n_wt=len(x),
-                grad_method=grad_method,
-                n_cpu=n_cpu,
-                wd=windfarm_model.site.default_wd,
-                ws=windfarm_model.site.default_ws,
-            ),
-            driver=EasyScipyOptimizeDriver(maxiter=maxiter),
-            constraints=[
-                boundary_constr,
-                SpacingConstraint(
-                    min_spacing=2 * windfarm_model.windTurbines.diameter()
-                ),
-            ],
-        )
-
-    def optimize_turbine_positions(self, params, **kwargs):
-        """
-        Optimize wind turbine positions in windfarm.
-        """
-        results = []
-        output_headers = {}
-        return OptimizationResult(results, output_headers=output_headers)
-
-    ##############
-    # SUPPORTING #
-    ##############
-
-    def get_windfarm_model(self, params, **kwargs) -> PyWakeWindFarmModel:
-        """
-        Setup default windfarm to some initial state.
+        Setup wind farm model.
         """
         wind_turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]()
 
         # weibull parameters
-        wind_data = get_gwc_data(*self.get_windfarm_centroid(params, **kwargs))
+        centroid = self._get_windfarm_centroid(params, **kwargs)
+        lat, lon = RDWGSConverter.from_rd_to_wgs(centroid)
+        wind_data = get_gwc_data(lat, lon)
         heights = list(wind_data.get_index("height"))
         try:
             height_index = heights.index(WIND_MEASUREMENT_HEIGHT)
@@ -280,21 +283,142 @@ class Controller(ViktorController):
             site, wind_turbine, turbulenceModel=CrespoHernandez()
         )
 
-    def get_windfarm_centroid(self, params, **kwargs):
-        # determine center of wind farm polygon
+    ################
+    # OPTIMIZATION #
+    ################
+    def optimize_turbine_positions(self, params, **kwargs):
+        """
+        Optimize wind turbine positions in windfarm.
+        """
+        # collect model
+        wind_farm = self.get_wind_farm_model(params)
+        site = wind_farm.site
+
+        # construct top farm problem
+        topfarm_problem = self.get_topfarm_problem(params, wind_farm)
+
+        # perform optimization routine (~ 60s)
+        cost, state, recorder = topfarm_problem.optimize(disp=True)
+
+        # convergence info
+        t, aep = [recorder[v] for v in ["timestamp", "AEP"]]
+
+        # meta info
+        x, _ = self._get_initial_turbine_positions(params)
+        n_wt = len(x)
+        n_wd = len(site.default_wd)
+        n_ws = len(site.default_ws)
+
+        # convergence results
+        results = []
+        output_headers = {}
+        print("AEP ", aep)
+
+        # convergence plot
+        fig = plt.figure()
+        plt.plot(t - t[0], aep, label="...")
+        setup_plot(
+            ylabel="AEP [GWh]",
+            xlabel="Time [s]",
+            title=f"{n_wt} wind turbines, {n_wd} wind directions, {n_ws} wind speeds",
+        )
+        plt.ticklabel_format(useOffset=False)
+        png = File()
+        fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
+        plt.close()
+        image = ImageResult(png)
+
+        return OptimizationResult(results, output_headers=output_headers, image=image)
+
+    def get_topfarm_problem(
+        self, params, wind_farm, grad_method=autograd, maxiter=4, n_cpu=1, **kwargs
+    ) -> TopFarmProblem:
+        """
+        function to create a topfarm problem, following the elements of OpenMDAO architecture
+        """
+        x, y = self._get_initial_turbine_positions(params)
+        centroid = self._get_windfarm_centroid(params)
+        boundary_points = np.array(self._get_windfarm_points(params)) - centroid
+        boundary_constr = XYBoundaryConstraint(boundary_points, boundary_type="polygon")
+        return TopFarmProblem(
+            design_vars={"x": x, "y": y},
+            cost_comp=PyWakeAEPCostModelComponent(
+                wind_farm,
+                n_wt=len(x),
+                grad_method=grad_method,
+                n_cpu=n_cpu,
+                wd=wind_farm.site.default_wd,
+                ws=wind_farm.site.default_ws,
+            ),
+            driver=EasyScipyOptimizeDriver(maxiter=maxiter, disp=False),
+            constraints=[
+                boundary_constr,
+                SpacingConstraint(min_spacing=self._get_turbine_spacing(params)),
+            ],
+        )
+
+    ##############
+    # SUPPORTING #
+    ##############
+
+    def _get_windfarm_boundary(self, params, **kwargs):
+        polygon = self._get_windfarm_polygon(params)
+        return polygon.exterior.xy
+
+    def _get_windfarm_centroid(self, params, **kwargs):
+        points = [Point(*point) for point in self._get_windfarm_points(params)]
+        return Polygon(points).centroid
+
+    def _get_windfarm_points(self, params, **kwargs):
         if (polygon := params.assemble.polygon) is not None:
-            points = [Point(*point.rd) for point in polygon.points]
-            center = Polygon(points).centroid
-            return RDWGSConverter.from_rd_to_wgs(center)
+            return [point.rd for point in polygon.points]
         else:
             raise UserError("First specify wind farm polygon")
 
-    @staticmethod
-    def calculate_windfarm_aep(
-        initial_positions, simulationResult: PyWakeSimulationResult = None
-    ) -> float:
-        """Calculate wake loss of windfam configuration from AEP."""
-        aep = simulationResult.aep().sum().data
-        # aepNoWakeLoss = simulationResult.aep(with_wake_loss=False).sum().data
-        # return (aep - aepNoWakeLoss) / aepNoWakeLoss
-        return aep
+    def _get_initial_turbine_positions(self, params, **kwargs):
+        polygon = self._get_windfarm_polygon(params)
+
+        # get bounding box coordinates and lengths
+        minx, miny, maxx, maxy = polygon.bounds
+
+        # get turbine diameter
+        turbine_spacing = self._get_turbine_spacing(params)
+
+        # generate uniform grid of turbines in bounding box
+        xs = np.arange(minx, maxx, turbine_spacing)
+        ys = np.arange(miny, maxy, turbine_spacing)
+
+        x, y = np.meshgrid(xs, ys)
+        x, y = x.flatten(), y.flatten()
+        points = np.vstack((x, y)).T
+
+        # select only points within polygon
+        path = self._get_windfarm_path(params)
+        mask = path.contains_points(points)
+
+        print("number turbines = ", len(x[mask]))
+
+        return x[mask], y[mask]
+
+    def _get_buffer_bounds(self, params, **kwargs):
+        polygon = self._get_windfarm_polygon(params)
+        buffer_fraction = 0.05  # fraction of total distance
+        buffer_distance = buffer_fraction * polygon.length
+        return polygon.buffer(buffer_distance).bounds
+
+    def _get_windfarm_polygon(self, params, **kwargs):
+        points = np.array(self._get_windfarm_points(params))
+        centroid = self._get_windfarm_centroid(params)
+
+        # translate polygon to origin for convenience
+        return ShapelyPolygon(points - centroid)
+
+    def _get_windfarm_path(self, params, **kwargs):
+        points = np.array(self._get_windfarm_points(params))
+        centroid = self._get_windfarm_centroid(params)
+        return MPLPath(points - centroid)
+
+    def _get_turbine_spacing(self, params):
+        turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]()
+        diameter = turbine.diameter()
+        return diameter * params.inspect.turbine_spacing

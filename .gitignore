@@ -1,2 +1,9 @@
+# vscode
+.vscode
+
+# python
 /venv
 /__pycache__
+
+# topfarm & scipy output files
+*.out
