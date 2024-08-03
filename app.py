@@ -56,6 +56,8 @@ IMAGE_DPI = 800
 SITES = ["Horns Rev", "Parque Ficticio", "Lillgrund Wind Farm"]
 SITE_CLASSES = [Hornsrev1Site, ParqueFicticioSite, LillgrundSite]
 SITE_CLASSES_DICT = {site: site_cls for site, site_cls in zip(SITES, SITE_CLASSES)}
+SITE_MINIMUM_AREA = 20  # km^2
+SITE_MAXIMUM_AREA = 40  # km^2
 
 # wind turbines
 TURBINES = ["V80", "IEA37", "DTU10MW", "SWT 2.3"]
@@ -70,8 +72,8 @@ WIND_MEASUREMENT_HEIGHT = 100.0  # m (for convenience we fix this height. Not ac
 TURBULENCE_INTENSITY = 0.1
 
 
-def get_divisors(n, min=5):
-    bin_nums = np.arange(5, n + 1)
+def get_divisors(n, minimum=5):
+    bin_nums = np.arange(minimum, n + 1)
     remainders = np.remainder(n, bin_nums)
     mask = remainders == 0
     return bin_nums[mask].tolist()
@@ -150,6 +152,19 @@ class Controller(ViktorController):
         features = []
 
         if (polygon := params.assemble.polygon) is not None:
+            area = self._get_windfarm_polygon(params).area / 1e6  # km^2
+            if area < SITE_MINIMUM_AREA:
+                raise UserError(
+                    f"Choose a larger site. Current: {area:.1f} "
+                    + r"(km^2). "
+                    + f"Required: {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA} (km^2)"
+                )
+            if area > SITE_MAXIMUM_AREA:
+                raise UserError(
+                    f"Choose a smaller site. Current: {area:.1f}"
+                    + r"(km^2). "
+                    + f"Required: {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA} (km^2)"
+                )
             features += [
                 MapPolygon.from_geo_polygon(polygon),
             ]
@@ -238,7 +253,7 @@ class Controller(ViktorController):
         """
         wind_turbine = TURBINE_CLASSES_DICT[params.assemble.turbine]()
 
-        # weibull parameters
+        # obtain wind distribution data (a.k.a. weibull parameters)
         centroid = self._get_windfarm_centroid(params, **kwargs)
         lat, lon = RDWGSConverter.from_rd_to_wgs(centroid)
         wind_data = get_gwc_data(lat, lon)
@@ -248,6 +263,7 @@ class Controller(ViktorController):
         except ValueError:
             UserError("height not avalaible at this site")
 
+        # simplify stuff by choosing wind data from a specific height (not very accurate)
         f = wind_data.data_vars.get("frequency")[ROUGHNESS_INDEX].data
         A = wind_data.data_vars.get("A")[ROUGHNESS_INDEX, height_index].data
         k = wind_data.data_vars.get("k")[ROUGHNESS_INDEX, height_index].data
@@ -292,7 +308,7 @@ class Controller(ViktorController):
         topfarm_problem = self.get_topfarm_problem(params, wind_farm, plot_component)
 
         # perform optimization routine (~ 60s)
-        cost, state, recorder = topfarm_problem.optimize(disp=True)
+        _, _, recorder = topfarm_problem.optimize(disp=True)
 
         # save optimized positions plot
         png = File()
@@ -345,7 +361,7 @@ class Controller(ViktorController):
         **kwargs,
     ) -> TopFarmProblem:
         """
-        function to create a topfarm problem, following the elements of OpenMDAO architecture
+        function to create a topfarm problem, following the elements of OpenMDAO architecture.
         """
         x, y = self._get_initial_turbine_positions(params)
         centroid = self._get_windfarm_centroid(params)
@@ -372,7 +388,6 @@ class Controller(ViktorController):
     ##############
     # SUPPORTING #
     ##############
-
     def _get_windfarm_boundary(self, params, **kwargs):
         polygon = self._get_windfarm_polygon(params)
         return polygon.exterior.xy
@@ -393,36 +408,30 @@ class Controller(ViktorController):
         # get bounding box coordinates and lengths
         minx, miny, maxx, maxy = polygon.bounds
 
-        # get turbine diameter
+        # get turbine spacing
         turbine_spacing = self._get_turbine_spacing(params)
 
         # generate uniform grid of turbines in bounding box
         xs = np.arange(minx, maxx, turbine_spacing)
         ys = np.arange(miny, maxy, turbine_spacing)
-
         x, y = np.meshgrid(xs, ys)
         x, y = x.flatten(), y.flatten()
         points = np.vstack((x, y)).T
 
-        # select only points within polygon
+        # generate mask for points within polygon
         path = self._get_windfarm_path(params)
         mask = path.contains_points(points)
-
-        print("number turbines = ", len(x[mask]))
-
         return x[mask], y[mask]
 
     def _get_buffer_bounds(self, params, **kwargs):
         polygon = self._get_windfarm_polygon(params)
-        buffer_fraction = 0.05  # fraction of total distance
+        buffer_fraction = 0.05
         buffer_distance = buffer_fraction * polygon.length
         return polygon.buffer(buffer_distance).bounds
 
     def _get_windfarm_polygon(self, params, **kwargs):
         points = np.array(self._get_windfarm_points(params))
         centroid = self._get_windfarm_centroid(params)
-
-        # translate polygon to origin for convenience
         return ShapelyPolygon(points - centroid)
 
     def _get_windfarm_path(self, params, **kwargs):
