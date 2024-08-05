@@ -37,6 +37,7 @@ from viktor.parametrization import (
     NumberField,
     OptimizationButton,
     OptionField,
+    OutputField,
     Step,
     Text,
     ViktorParametrization,
@@ -58,6 +59,12 @@ SITE_CLASSES = [Hornsrev1Site, ParqueFicticioSite, LillgrundSite]
 SITE_CLASSES_DICT = {site: site_cls for site, site_cls in zip(SITES, SITE_CLASSES)}
 SITE_MINIMUM_AREA = 20  # km^2
 SITE_MAXIMUM_AREA = 40  # km^2
+
+
+def get_windfarm_area(params, **kwargs):
+    if params.assemble.polygon:
+        return round(Controller._get_windfarm_polygon(params).area / 1e6, 2)  # km^2
+
 
 # wind turbines
 TURBINES = ["V80", "IEA37", "DTU10MW", "SWT 2.3"]
@@ -87,6 +94,11 @@ class Parametrization(ViktorParametrization):
     assemble = Step("Assemble wind farm", views=["site_locations", "wind_rose"])
     assemble.welcome_text = Text("# Welcome to wind farm modelling with PyWake! 💨")
     assemble.polygon = GeoPolygonField("Mark site")
+    assemble.windfarm_area = OutputField(
+        "Wind farm area",
+        suffix=r"$\textrm{km}^2$",
+        value=get_windfarm_area,
+    )
     assemble.site = OptionField("Choose site", options=SITES, default=SITES[0])
 
     assemble.turbine = OptionField(
@@ -152,7 +164,7 @@ class Controller(ViktorController):
         features = []
 
         if (polygon := params.assemble.polygon) is not None:
-            area = self._get_windfarm_polygon(params).area / 1e6  # km^2
+            area = get_windfarm_area(params)
             if area < SITE_MINIMUM_AREA:
                 raise UserError(
                     f"Choose a larger site. Current: {area:.1f} "
@@ -392,11 +404,13 @@ class Controller(ViktorController):
         polygon = self._get_windfarm_polygon(params)
         return polygon.exterior.xy
 
-    def _get_windfarm_centroid(self, params, **kwargs):
-        points = [Point(*point) for point in self._get_windfarm_points(params)]
+    @staticmethod
+    def _get_windfarm_centroid(params, **kwargs):
+        points = [Point(*point) for point in Controller._get_windfarm_points(params)]
         return Polygon(points).centroid
 
-    def _get_windfarm_points(self, params, **kwargs):
+    @staticmethod
+    def _get_windfarm_points(params, **kwargs):
         if (polygon := params.assemble.polygon) is not None:
             return [point.rd for point in polygon.points]
         else:
@@ -429,14 +443,15 @@ class Controller(ViktorController):
         buffer_distance = buffer_fraction * polygon.length
         return polygon.buffer(buffer_distance).bounds
 
-    def _get_windfarm_polygon(self, params, **kwargs):
-        points = np.array(self._get_windfarm_points(params))
-        centroid = self._get_windfarm_centroid(params)
+    @staticmethod
+    def _get_windfarm_polygon(params, **kwargs):
+        points = np.array(Controller._get_windfarm_points(params))
+        centroid = Controller._get_windfarm_centroid(params)
         return ShapelyPolygon(points - centroid)
 
     def _get_windfarm_path(self, params, **kwargs):
         points = np.array(self._get_windfarm_points(params))
-        centroid = self._get_windfarm_centroid(params)
+        centroid = Controller._get_windfarm_centroid(params)
         return MPLPath(points - centroid)
 
     def _get_turbine_spacing(self, params):
