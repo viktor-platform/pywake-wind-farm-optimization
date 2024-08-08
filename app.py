@@ -1,9 +1,13 @@
+from turtle import position
 from warnings import filterwarnings
 
 filterwarnings("ignore", category=DeprecationWarning)
 filterwarnings("ignore", category=RuntimeWarning)
 
+import logging
+from contextlib import redirect_stdout
 from json import dumps, loads
+from os import remove
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -16,7 +20,6 @@ from py_wake import HorizontalGrid
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80
 from py_wake.examples.data.iea37 import IEA37_WindTurbines
-from py_wake.examples.data.lillgrund import SWT23
 from py_wake.literature.gaussian_models import Blondel_Cathelain_2020
 from py_wake.site import XRSite
 from py_wake.turbulence_models import CrespoHernandez
@@ -39,7 +42,6 @@ from topfarm.plotting import XYPlotComp
 
 # VIKTOR
 from viktor import File, ViktorController
-from viktor.core import Storage
 from viktor.errors import UserError
 from viktor.geometry import Point, Polygon, RDWGSConverter
 from viktor.parametrization import (
@@ -56,7 +58,6 @@ from viktor.parametrization import (
     ViktorParametrization,
 )
 from viktor.result import ImageResult, OptimizationResult, OptimizationResultElement
-from viktor.utils import memoize
 from viktor.views import (
     DataGroup,
     DataItem,
@@ -76,6 +77,27 @@ from gwa_reader import get_gwc_data
 # CONSTANTS #
 #############
 ROOT = Path(__file__).parent
+OPTIMIZED_POSITIONS_PATH = ROOT / "lib" / "optimized_positions_plot.png"
+OPTIMIZED_AEP_PATH = ROOT / "lib" / "optimized_positions_aep"
+OUT = ROOT / "std.out"
+
+
+def remove_optimizations():
+    paths = [OPTIMIZED_POSITIONS_PATH, OPTIMIZED_AEP_PATH]
+    for path in paths:
+        if path.exists():
+            remove(path)
+
+
+def supress_stdout(func):
+    def wrapper(*a, **ka):
+        with open(OUT, "w") as out:
+            with redirect_stdout(out):
+                return func(*a, **ka)
+
+    return wrapper
+
+
 IMAGE_DPI = 800
 
 
@@ -97,8 +119,8 @@ def get_windfarm_area(params, **kwargs):
 
 
 # wind turbines
-TURBINES = ["V80 (2.0 MW)", "SWT (2.3 MW)" "IEA37 (3.35 MW)", "DTU (10 MW)"]
-TURBINE_CLASSES = [V80, SWT23, IEA37_WindTurbines, DTU10MW]
+TURBINES = ["V80 (2.0 MW)", "IEA37 (3.35 MW)", "DTU (10 MW)"]
+TURBINE_CLASSES = [V80, IEA37_WindTurbines, DTU10MW]
 TURBINE_CLASSES_DICT = {
     turbine: turbine_cls for turbine, turbine_cls in zip(TURBINES, TURBINE_CLASSES)
 }
@@ -110,45 +132,38 @@ TURBULENCE_INTENSITY = 0.1
 WIND_BIN_NUMS = get_divisors(360)
 
 
-# @memoize
-# def simulate_wind_farm(, x, y, wind_speed, wind_direction):
-#     return windfarm(x, y, wd=wind_speed, ws=wind_direction)
-
-
-def get_simulated_wind_farm(params, **kwargs):
-    # wind farm model
-    windfarm = Controller.get_wind_farm_model(params)
-
-    # initiliaze turbine positions
-    x, y = Controller._get_initial_turbine_positions(params)
-
-    # windspeed and direction
-    wind_direction = params.visualize.wind_direction
-    wind_speed = params.visualize.wind_speed
-
-    # simulation
-    windfarm_simulated = windfarm(x, y, wd=wind_direction, ws=wind_speed)
-
-    return windfarm_simulated
-
-
 def calculate_aep(params, **kwargs):
     if params.assemble.polygon:
-        simulated_wind_farm = get_simulated_wind_farm(params)
-        aep = simulated_wind_farm.aep().sum().data / 1e6
+        # initiliaze turbine positions
+        x, y = Controller._get_initial_turbine_positions(params)
+        wind_farm = Controller.get_wind_farm_model(params)
+
+        # windspeed and direction
+        wind_direction = params.visualize.wind_direction
+        wind_speed = params.visualize.wind_speed
+
+        aep = wind_farm.aep(x, y, wd=wind_direction, ws=wind_speed) / 1e6
 
         return round(aep, 2)
 
 
 def calculate_loss(params, **kwargs):
     if params.assemble.polygon:
-        simulated_wind_farm = get_simulated_wind_farm(params)
-        aep = simulated_wind_farm.aep().sum().data
-        aep_without_loss = simulated_wind_farm.aep(with_wake_loss=False).sum().data
+        # initiliaze turbine positions
+        x, y = Controller._get_initial_turbine_positions(params)
+        wind_farm = Controller.get_wind_farm_model(params)
+
+        # windspeed and direction
+        wind_direction = params.visualize.wind_direction
+        wind_speed = params.visualize.wind_speed
+
+        aep = wind_farm.aep(x, y, wd=wind_direction, ws=wind_speed) / 1e6
+        aep_without_loss = (
+            wind_farm.aep(x, y, wd=wind_direction, ws=wind_speed, with_wake_loss=False)
+            / 1e6
+        )
         loss = (aep_without_loss - aep) / aep_without_loss * 100
 
-        if loss < 0:  # corrcet for slightly negative values
-            loss = 0
         return round(loss, 2)
 
 
@@ -158,15 +173,36 @@ def number_of_turbines(params, **kwargs):
         return len(x)
 
 
+@supress_stdout
+def optimize_wind_farm(topfarm_problem):
+    logging.disable()
+    _, _, recorder = topfarm_problem.optimize(disp=False)
+    return recorder
+
+
 class Parametrization(ViktorParametrization):
     assemble = Step("Select location", views=["site_location"], width=30)
     assemble.welcome_text = Text(
-        """
+        f"""
 # Welcome to wind farm modelling with PyWake! 💨
 With this app you can design a wind farm in a few steps.
 
-Start by selecting an area for your wind farm by drawing a polygon on the map
-        """
+Start by selecting an area for your wind farm by drawing a polygon on the map.
+
+In order to keep the current problem manageable, the area of your windfarm $A$ should satisfy
+$$
+{SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA}
+"""
+        + r"""
+\ ({\textrm{km}^2})
+$$
+Note that one of the biggest off-shore wind farms, known as the [Hornsea Wind Farm](https://en.wikipedia.org/wiki/Hornsea_Wind_Farm)
+covers an area of almost 5000 $\textrm{km}^2$! Typically speaking wind farms are a couple hundreds of squared kilometers. Some 
+examples include:
+- [Walney Wind Farm](https://en.wikipedia.org/wiki/Walney_Wind_Farm) (~80 $\textrm{km}^2$);
+- [Triton Knoll](https://en.wikipedia.org/wiki/Triton_Knoll) (~200 $\textrm{km}^2$);
+- [Borssele Offshore Wind Farm](https://en.wikipedia.org/wiki/Borssele_Offshore_Wind_Farm) (~300 $\textrm{km}^2$).
+"""
     )
     assemble.polygon = GeoPolygonField("")
     assemble.windfarm_area = OutputField(
@@ -213,10 +249,12 @@ The goal is to maximize your wind farm's Annual Energy Production (AEP),
 while using a relatively low number of turbines. These values play an essential 
 role in determining when you can expect a Return on Investment (ROI) of your wind farm. 
 The output fields below as well the data menu in the wake plot (press the "<" on the right) 
-show (AEP) and the number of turbines.
+show AEP, percentual loss and the number of turbines.
 """
     )
-    visualize.aep = OutputField("AEP", value=calculate_aep, suffix=r"$\textrm{GW}$")
+    visualize.aep = OutputField(
+        "AEP", value=calculate_aep, suffix=r"$\times 10 ^ 6 \ \textrm{GWh}$"
+    )
     visualize.loss = OutputField("Loss", value=calculate_loss, suffix="%")
     visualize.number_of_turbines = OutputField(
         "Number of turbines", value=number_of_turbines
@@ -281,15 +319,22 @@ Increasing this spacing reduces wake effects as well as the total number of turb
 Many factors come into play when optmizing your wind farm's layout. The previous step
 illustrates how this can complicate finding the most efficient and profitable wind farm.
 Luckily, we can use the [Topfarm module](https://topfarm.pages.windenergy.dtu.dk/TopFarm2/) 
-to automatically find improved positions for the wind turbines. 
+to automatically find optimal positions for the wind turbines. This 
+optimization considers the wake effects resulting from the wind conditions at your chosen site.
 
 By pressing the optimization button below you can further improve on your wind farm's layout.
 After the routine has finished, you can update the "Optimized positions" view on the right to see 
 the recommended changes!
+
+Optimization can take anywhere from a few seconds to a few minutes, depending on the number of turbines
+and iterations. Below you can alter the number of iterations to your liking
         """
     )
     optimize.positions = OptimizationButton(
         "Optimize turbine positions", "optimize_turbine_positions", longpoll=True
+    )
+    optimize.number_of_iterations = NumberField(
+        "Number of iterations", min=2, max=10, default=4, step=1
     )
 
 
@@ -325,6 +370,8 @@ class Controller(ViktorController):
             lat, lon = RDWGSConverter.from_rd_to_wgs(centroid)
             features += [MapPoint(lat, lon)]
 
+        # remove files from possible previous run
+        remove_optimizations()
         return MapResult(features)
 
     @ImageView("Wind rose", duration_guess=5)
@@ -345,8 +392,18 @@ class Controller(ViktorController):
 
     @ImageAndDataView("Wake plot", duration_guess=5)
     def wake_plot(self, params, **kwargs):
-        # simulate wind farm
-        windfarm_simulated = get_simulated_wind_farm(params)
+        # wind farm model
+        windfarm = Controller.get_wind_farm_model(params)
+
+        # initiliaze turbine positions
+        x, y = Controller._get_initial_turbine_positions(params)
+
+        # windspeed and direction
+        wind_direction = params.visualize.wind_direction
+        wind_speed = params.visualize.wind_speed
+
+        # simulation
+        windfarm_simulated = windfarm(x, y, wd=wind_direction, ws=wind_speed)
 
         # define flow map
         grid = HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
@@ -378,7 +435,7 @@ class Controller(ViktorController):
 
         # AEP, loss and number of turbines
         data = DataGroup(
-            DataItem("AEP", value=calculate_aep(params), suffix="GW"),
+            DataItem("AEP", value=calculate_aep(params), suffix="10^6 GWh"),
             DataItem("Loss", value=calculate_loss(params), suffix="%"),
             DataItem("Number of turbines", value=number_of_turbines(params)),
         )
@@ -392,7 +449,7 @@ class Controller(ViktorController):
                 DataItem(
                     "AEP (optimal)",
                     value=aep_data["aep"],
-                    suffix="GW",
+                    suffix="10^6 GWh",
                     number_of_decimals=2,
                 ),
                 DataItem(
@@ -404,12 +461,10 @@ class Controller(ViktorController):
             )
         with open(ROOT / "lib" / "optimized_positions_plot.png", "rb") as png_f:
             png = File.from_data(png_f.read())
-            return ImageAndDataResult(png, aep_data_group)
 
-    @ImageView("aep per turbine", duration_guess=1)
-    def optimal_aep_per_turbine(self, params, **kwargs):
-        png = File().from_path(ROOT / "lib" / "optimization_functionality_sample.png")
-        return ImageResult(png)
+        # leave no traces
+        remove_optimizations()
+        return ImageAndDataResult(png, aep_data_group)
 
     #########
     # MODEL #
@@ -473,10 +528,15 @@ class Controller(ViktorController):
         plot_component = XYPlotComp(ax=optimized_positions_ax)
 
         # construct top farm problem
-        topfarm_problem = self.get_topfarm_problem(params, wind_farm, plot_component)
+        topfarm_problem = self.get_topfarm_problem(
+            params,
+            wind_farm,
+            plot_component,
+            maxiter=params.optimize.number_of_iterations,
+        )
 
-        # perform optimization routine (~ 60s)
-        _, _, recorder = topfarm_problem.optimize(disp=True)
+        # perform optimization routine
+        recorder = optimize_wind_farm(topfarm_problem)
 
         # convergence info
         t, aep = [recorder[v] for v in ["timestamp", "AEP"]]
@@ -486,23 +546,26 @@ class Controller(ViktorController):
         n_wd = len(site.default_wd)
         n_ws = len(site.default_ws)
 
-        # convergence results
+        # convergence result elements
         results = [
             OptimizationResultElement(
                 params, {"time": round(_t - t[0], 2), "aep": round(_aep / 1e6, 3)}
             )
             for _t, _aep in zip(t, aep)
         ]
-        output_headers = {"time": "Time (s)", "aep": "AEP (GWh)"}
+        output_headers = {"time": "Computation time (s)", "aep": "AEP (10^6 GWh)"}
+
+        # remove files from possible previous run
+        remove_optimizations()
 
         # save optimized positions plot
         optimized_positions_ax.set_title("")
-        with open(ROOT / "lib" / "optimized_positions_plot.png", "wb") as png:
+        with open(OPTIMIZED_POSITIONS_PATH, "wb") as png:
             optimized_positions_fig.savefig(png, format="png", dpi=IMAGE_DPI)
         plt.close(optimized_positions_fig)
 
         # save (increase of) AEP
-        with open(ROOT / "lib" / "optimized_positions_aep", "wb") as aep_data_f:
+        with open(OPTIMIZED_AEP_PATH, "wb") as aep_data_f:
             increase = (aep[-1] - aep[0]) / aep[0] * 100
             data = {"aep": aep[-1] / 1e6, "increase": increase}
             aep_data_f.write(dumps(data).encode("utf-8"))
@@ -511,8 +574,8 @@ class Controller(ViktorController):
         convergence_fig = plt.figure()
         plt.plot(t - t[0], aep / 1e6)
         setup_plot(
-            ylabel="AEP (GWh)",
-            xlabel="Time (s)",
+            ylabel=r"AEP ($\times 10^6\ \text{GWh}$)",
+            xlabel=r"Computation time (s)",
             title=f"{n_wt} wind turbines, {n_wd} wind directions, {n_ws} wind speeds",
         )
         plt.ticklabel_format(useOffset=False)
