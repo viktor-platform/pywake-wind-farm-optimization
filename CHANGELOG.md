@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+### Fixed
+
+## Version 1.0
+_First production version!_
+
+### Added
+Docstrings, README and template description
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
 ## Version 0.3
 
 ### Added
