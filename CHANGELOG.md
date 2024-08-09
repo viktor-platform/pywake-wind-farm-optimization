@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## Version 0.3
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+optimization button in demo environment
+
 ## Version 0.2
 
 ### Added
