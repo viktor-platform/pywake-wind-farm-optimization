@@ -12,7 +12,8 @@ from viktor.parametrization import (
     ViktorParametrization,
 )
 
-from wind_farm import (
+from lib.wind_farm import (
+    MAX_ITERATIONS,
     SITE_MAXIMUM_AREA,
     SITE_MINIMUM_AREA,
     TURBINES,
@@ -175,8 +176,15 @@ and iterations. Below you can alter the number of iterations to your liking
         """
     )
     optimize.positions = OptimizationButton(
-        "Optimize turbine positions", "optimization_routine", longpoll=True
+        "Optimize turbine positions", "optimization_routine", longpoll=True, flex=50
     )
     optimize.number_of_iterations = NumberField(
-        "Number of iterations", min=2, max=10, default=4, step=1
+        "Number of iterations",
+        min=2,
+        max=MAX_ITERATIONS,
+        default=4,
+        step=1,
+        variant="slider",
+        suffix=f"max. {MAX_ITERATIONS}",
+        flex=50,
     )

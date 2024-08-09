@@ -4,10 +4,7 @@ from pathlib import Path
 import numpy as np
 from viktor import File
 
-ROOT = Path(__file__).parent
-OPTIMIZED_POSITIONS_PATH = ROOT / "lib" / "optimized_positions_plot.png"
-OPTIMIZED_AEP_PATH = ROOT / "lib" / "optimized_positions_aep"
-OUT = ROOT / "std.out"
+ROOT = Path(__file__).parent.parent
 IMAGE_DPI = 800
 ENCODING = "utf-8"
 
@@ -25,3 +22,4 @@ def serialize(file: File) -> str:
 
 def deserialize(s: str) -> File:
     return File.from_data(base64.b64decode(s.encode(encoding=ENCODING)))
+

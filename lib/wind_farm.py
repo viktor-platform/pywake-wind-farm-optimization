@@ -1,9 +1,9 @@
-import base64
-import io
-from pickle import dumps
+from os import chmod
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Topfarm
 import xarray as xr
 from matplotlib.path import Path as MPLPath
 
@@ -16,14 +16,10 @@ from py_wake.site import XRSite
 from py_wake.turbulence_models import CrespoHernandez
 from py_wake.utils.gradients import autograd
 from py_wake.utils.plotting import setup_plot
-from py_wake.wind_farm_models.wind_farm_model import (
-    WindFarmModel as PyWakeWindFarmModel,
-)
+from py_wake.wind_farm_models.wind_farm_model import WindFarmModel
 
 # Shapely
 from shapely.geometry import Polygon as ShapelyPolygon
-
-# Topfarm
 from topfarm._topfarm import TopFarmProblem
 from topfarm.constraint_components.boundary import XYBoundaryConstraint
 from topfarm.constraint_components.spacing import SpacingConstraint
@@ -37,8 +33,8 @@ from viktor.errors import UserError
 from viktor.geometry import GeoPoint, Point, Polygon, RDWGSConverter
 from viktor.utils import memoize
 
-from constants import ENCODING, IMAGE_DPI, get_divisors, serialize
-from gwa_reader import get_gwc_data  # Global Wind Atlas API
+from lib.constants import IMAGE_DPI, ROOT, get_divisors, serialize
+from lib.gwa_reader import get_gwc_data  # Global Wind Atlas API
 
 # wind turbines
 TURBINES = ["V80 (2.0 MW)", "IEA37 (3.35 MW)", "DTU (10 MW)"]
@@ -54,6 +50,10 @@ TURBULENCE_INTENSITY = 0.1
 WIND_BIN_NUMS = get_divisors(360)
 SITE_MINIMUM_AREA = 1  # km^2
 SITE_MAXIMUM_AREA = 20  # km^2
+OPENMDAO_OUT_PATH = ROOT / "openmdao_checks.out"
+
+# optimization
+MAX_ITERATIONS = 20
 
 
 #################
@@ -127,10 +127,7 @@ def number_of_turbines(params, **kwargs):
 #########
 # MODEL #
 #########
-def get_wind_farm_model(
-    points: list[tuple[float, float]],
-    turbine_type: str,
-) -> PyWakeWindFarmModel:
+def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
     """
     Setup wind farm model.
     """
@@ -174,12 +171,7 @@ def get_wind_farm_model(
 # OPTIMIZATION #
 ################
 @memoize
-def optimize_turbine_positions(
-    points: list[tuple[float, float]],
-    turbine_type: str,
-    turbine_spacing: float,
-    maxiter: int = 5,
-):
+def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     """
     Optimize wind turbine positions in windfarm.
     """

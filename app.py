@@ -3,9 +3,6 @@ from warnings import filterwarnings
 filterwarnings("ignore", category=DeprecationWarning)
 filterwarnings("ignore", category=RuntimeWarning)
 
-import base64
-from pickle import loads
-
 import matplotlib.pyplot as plt
 
 # PyWake
@@ -14,7 +11,6 @@ from py_wake import HorizontalGrid
 # VIKTOR
 from viktor import File, ViktorController
 from viktor.errors import UserError
-from viktor.geometry import RDWGSConverter
 from viktor.result import ImageResult, OptimizationResult, OptimizationResultElement
 from viktor.views import (
     DataGroup,
@@ -28,11 +24,11 @@ from viktor.views import (
     MapView,
 )
 
-from constants import IMAGE_DPI, deserialize
-from parametrization import Parametrization
+from lib.constants import IMAGE_DPI, deserialize
+from lib.parametrization import Parametrization
 
 # wind farm model
-from wind_farm import (
+from lib.wind_farm import (
     SITE_MAXIMUM_AREA,
     SITE_MINIMUM_AREA,
     calculate_aep,
@@ -210,7 +206,7 @@ class Controller(ViktorController):
             points,
             turbine_type,
             turbine_spacing,
-            maxiter=params.optimize.number_of_iterations,
+            params.optimize.number_of_iterations,
         )
 
         # convergence result elements
@@ -224,8 +220,6 @@ class Controller(ViktorController):
 
         # convergence plot
         convergence_png = deserialize(convergence_png_s)
-        # with convergence_png.open_binary() as png:
-        #     png.write(base64.b64decode(convergence_png_serialized.encode()))
 
         return OptimizationResult(
             results, output_headers=output_headers, image=ImageResult(convergence_png)
