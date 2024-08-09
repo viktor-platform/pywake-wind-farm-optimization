@@ -51,6 +51,11 @@ class Controller(ViktorController):
 
     @MapView("Site map", duration_guess=1)
     def site_location(self, params, **kwargs):
+        """
+        Displays the site location on a map. Validates the area of the site against the minimum
+        and maximum allowed values. If valid, displays the polygon representing the site boundary
+        and a point indicating the centroid of the wind farm.
+        """
         features = []
 
         if (polygon := params.assemble.polygon) is not None:
@@ -78,6 +83,11 @@ class Controller(ViktorController):
 
     @ImageView("Wind rose", duration_guess=5)
     def wind_rose(self, params, **kwargs):
+        """
+        Generates and displays a wind rose plot, showing the distribution of wind direction
+        and speed at the wind farm site based on the selected number of wind directions
+        and speed bins.
+        """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
         turbine_type = params.visualize.turbine
@@ -97,6 +107,11 @@ class Controller(ViktorController):
 
     @ImageAndDataView("Wake plot", duration_guess=5)
     def wake_plot(self, params, **kwargs):
+        """
+        Simulates and displays the wake effects of the wind farm, showing the distribution
+        of wind speed and direction as well as the boundary of the wind farm. Also displays
+        key metrics such as AEP (Annual Energy Production), wake loss, and the number of turbines.
+        """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
         turbine_type = params.visualize.turbine
@@ -153,6 +168,11 @@ class Controller(ViktorController):
 
     @ImageAndDataView("Optimized positions", duration_guess=5)
     def optimized_positions(self, params, **kwargs):
+        """
+        Optimizes and displays the positions of the wind turbines within the site.
+        Also provides the optimized Annual Energy Production (AEP) and its percentage increase
+        from the initial configuration.
+        """
         # gather params
         points = convert_to_points(params.assemble.polygon.points)
         turbine_type = params.visualize.turbine
@@ -194,7 +214,9 @@ class Controller(ViktorController):
 
     def optimization_routine(self, params, **kwargs):
         """
-        Optimize wind turbine positions in windfarm.
+        Executes the optimization routine for the wind turbine positions,
+        tracking the computation time and the resulting Annual Energy Production (AEP).
+        Returns an optimization result that includes a convergence info and plot.
         """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)

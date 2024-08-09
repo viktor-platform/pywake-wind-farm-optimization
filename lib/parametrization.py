@@ -37,7 +37,7 @@ Start by selecting an area for your wind farm by drawing a polygon on the map.
 In order to keep the current problem manageable, the area of your windfarm $A$ should satisfy
 $$
 {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA}
-"""
+        """
         + r"""
 \ ({\textrm{km}^2})
 $$
@@ -84,7 +84,7 @@ find out how you can improve the current layout!
 ## Wake effects
 Wake effects limit how much energy a wind farm produces. 
 Below you can try to account for wake effects in your wind farm. 
-    """
+        """
     )
     visualize.wake_effects_image = Image(path="wake_effects.jpg")
     visualize.revenue_text = Text(
@@ -139,7 +139,7 @@ Try to keep the follwing in mind, while designing your wind farm:
 but allows for a lower total number of turbines and increases wake effects;
 - Additionally, turbines are typically spaced several multiples of their diameter away from each other. 
 Increasing this spacing reduces wake effects as well as the total number of turbines and AEP. 
-"""
+        """
     )
     visualize.turbine = OptionField("Type", options=TURBINES, default=TURBINES[0])
     visualize.turbine_spacing = NumberField(

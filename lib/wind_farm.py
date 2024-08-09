@@ -14,6 +14,9 @@ original_check_config = Problem.check_config
 
 
 def check_config_alt(*args, **kwargs):
+    """
+    Overrides openMDAO Problem.check_config to suppress output to a file.
+    """
     return original_check_config(*args, out_file=None, **kwargs)
 
 
@@ -72,6 +75,9 @@ MAX_ITERATIONS = 20
 # OUTPUT FIELDS #
 #################
 def get_windfarm_area(params, **kwargs):
+    """
+    Calculates and returns the area of the wind farm based on the specified polygon.
+    """
     if (polygon := params.assemble.polygon) is not None:
         points = convert_to_points(polygon.points)
         polygon = get_windfarm_centered_polygon(points)
@@ -79,6 +85,9 @@ def get_windfarm_area(params, **kwargs):
 
 
 def calculate_aep(params, **kwargs):
+    """
+    Calculates and returns the Annual Energy Production (AEP) for the wind farm.
+    """
     if (polygon := params.assemble.polygon) is not None:
         turbine_type = params.visualize.turbine
         turbine_spacing = params.visualize.turbine_spacing
@@ -101,6 +110,9 @@ def calculate_aep(params, **kwargs):
 
 
 def calculate_loss(params, **kwargs):
+    """
+    Calculates and returns the energy loss due to wake effects in the wind farm.
+    """
     if (polygon := params.assemble.polygon) is not None:
         turbine_type = params.visualize.turbine
         turbine_spacing = params.visualize.turbine_spacing
@@ -128,6 +140,9 @@ def calculate_loss(params, **kwargs):
 
 
 def number_of_turbines(params, **kwargs):
+    """
+    Calculates and returns the number of turbines that can be placed within the polygon.
+    """
     if (polygon := params.assemble.polygon) is not None:
         points = convert_to_points(polygon.points)
         turbine_type = params.visualize.turbine
@@ -141,7 +156,7 @@ def number_of_turbines(params, **kwargs):
 #########
 def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
     """
-    Setup wind farm model.
+    Sets up and returns a wind farm model based on the provided points and turbine type.
     """
     wind_turbine = TURBINE_CLASSES_DICT[turbine_type]()
 
@@ -185,7 +200,8 @@ def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
 @memoize
 def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     """
-    Optimize wind turbine positions in windfarm.
+    Optimizes turbine positions in the wind farm and returns relevant data including
+    timestamps, AEP values, and serialized plots of the optimized positions and convergence.
     """
     # wind farm model
     wind_farm = get_wind_farm_model(points, turbine_type)
@@ -257,7 +273,7 @@ def get_topfarm_problem(
     n_cpu=1,
 ) -> TopFarmProblem:
     """
-    function to create a topfarm problem, following the elements of OpenMDAO architecture.
+    Creates and returns a TopFarmProblem for optimizing wind turbine positions.
     """
     site = wind_farm.site
     x, y = get_initial_turbine_positions(points, turbine_type, turbine_spacing)
@@ -288,11 +304,17 @@ def get_topfarm_problem(
 # SUPPORTING #
 ##############
 def get_windfarm_boundary(points):
+    """
+    Returns the boundary coordinates of the wind farm polygon.
+    """
     polygon = get_windfarm_centered_polygon(points)
     return polygon.exterior.xy
 
 
 def get_buffer_bounds(points: list[Point]):
+    """
+    Returns the buffered (extended) bounds of the wind farm polygon.
+    """
     polygon = get_windfarm_centered_polygon(points)
     buffer_fraction = 0.05
     buffer_distance = buffer_fraction * polygon.length
@@ -300,11 +322,17 @@ def get_buffer_bounds(points: list[Point]):
 
 
 def get_number_of_turbines(points, turbine_type, turbine_spacing):
+    """
+    Returns the number of turbines that can be placed within the wind farm polygon.
+    """
     x, _ = get_initial_turbine_positions(points, turbine_type, turbine_spacing)
     return len(x)
 
 
 def get_initial_turbine_positions(points, turbine_type, turbine_spacing):
+    """
+    Generates and returns the initial turbine positions within the wind farm polygon.
+    """
     polygon = get_windfarm_centered_polygon(points)
 
     # get bounding box coordinates and lengths
@@ -327,29 +355,47 @@ def get_initial_turbine_positions(points, turbine_type, turbine_spacing):
 
 
 def get_windfarm_centered_polygon(points: list[Point]):
+    """
+    Returns the wind farm polygon centered at the centroid of the provided points.
+    """
     return ShapelyPolygon(get_windfarm_centered_points(points))
 
 
 def get_windfarm_centered_points(points: list[Point]):
+    """
+    Centers the provided points around the centroid of the wind farm and returns them.
+    """
     points_rd = np.array(points)
     centroid_rd = get_windfarm_centroid_rd(points)
     return points_rd - centroid_rd
 
 
 def get_turbine_spacing(turbine_type, turbine_spacing):
+    """
+    Calculates and returns the spacing between turbines based on the turbine type and spacing factor.
+    """
     turbine = TURBINE_CLASSES_DICT[turbine_type]()
     diameter = turbine.diameter()
     return diameter * turbine_spacing
 
 
 def get_windfarm_centroid_wgs(points: list[Point]):
+    """
+    Returns the centroid of the wind farm in WGS (World Geodetic System) coordinates.
+    """
     centroid_rd = get_windfarm_centroid_rd(points)
     return RDWGSConverter.from_rd_to_wgs(centroid_rd)
 
 
 def get_windfarm_centroid_rd(points: list[Point]):
+    """
+    Returns the centroid of the wind farm in RD (Rijksdriehoek) coordinates.
+    """
     return Polygon([Point(*point) for point in points]).centroid
 
 
 def convert_to_points(geo_points: list[GeoPoint]):
+    """
+    Converts a list of GeoPoint objects to a list of RD coordinate points.
+    """
     return [geo_point.rd for geo_point in geo_points]

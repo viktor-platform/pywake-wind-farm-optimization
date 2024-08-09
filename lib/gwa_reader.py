@@ -9,7 +9,7 @@ def get_gwc_data(
     latitude: float, longitude: float, encoding: str = "ASCII"
 ) -> xr.Dataset:
     """
-    Gets GWC data at gievn coordinates. Source: https://github.com/jules-ch/wind-stats Copyright (c) 2020 Jules Chéron (MIT)
+    Gets GWC data at given coordinates. Source: https://github.com/jules-ch/wind-stats Copyright (c) 2020 Jules Chéron (MIT)
     """
 
     # global windatlas API
