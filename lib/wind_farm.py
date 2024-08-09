@@ -7,6 +7,18 @@ import numpy as np
 import xarray as xr
 from matplotlib.path import Path as MPLPath
 
+# openMDAO (patch logging function)
+from openmdao.core.problem import Problem
+
+original_check_config = Problem.check_config
+
+
+def check_config_alt(*args, **kwargs):
+    return original_check_config(*args, out_file=None, **kwargs)
+
+
+Problem.check_config = check_config_alt
+
 # PyWake
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80
