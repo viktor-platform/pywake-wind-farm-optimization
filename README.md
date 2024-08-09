@@ -16,10 +16,8 @@ A published version of this app is available on [VITKOR's demo environment](http
 ![](.viktor-template/select-location.gif)
 Start by selecting an area for your wind farm by drawing a polygon on the map.
 
-In order to keep the current problem manageable, the area of your windfarm A should satisfy
-$$
-1 < A < 20 (\text{km}^2)
-$$
+In order to keep the current problem manageable, the area of your windfarm A should satisfy: 1 < A < 20 (km^2)
+
 
 you can view the area of yout current site in 'Wind farm area' output field
 
