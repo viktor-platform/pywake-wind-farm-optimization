@@ -28,7 +28,7 @@ from viktor.views import (
     MapView,
 )
 
-from constants import ENCODING, IMAGE_DPI
+from constants import IMAGE_DPI, deserialize
 from parametrization import Parametrization
 
 # wind farm model
@@ -163,7 +163,7 @@ class Controller(ViktorController):
         turbine_spacing = params.visualize.turbine_spacing
 
         # optimize positions
-        _, aep, _, optimized_positions_png_serialized = optimize_turbine_positions(
+        _, aep, _, optimized_positions_png_s = optimize_turbine_positions(
             points,
             turbine_type,
             turbine_spacing,
@@ -190,8 +190,9 @@ class Controller(ViktorController):
             ),
         )
 
+        optimized_positions_png = deserialize(optimized_positions_png_s)
         return ImageAndDataResult(
-            loads(optimized_positions_png_serialized),
+            optimized_positions_png,
             aep_data_group,
         )
 
@@ -205,7 +206,7 @@ class Controller(ViktorController):
         turbine_spacing = params.visualize.turbine_spacing
 
         # optimize positions
-        t, aep, convergence_png_serialized, _ = optimize_turbine_positions(
+        t, aep, convergence_png_s, _ = optimize_turbine_positions(
             points,
             turbine_type,
             turbine_spacing,
@@ -222,11 +223,10 @@ class Controller(ViktorController):
         output_headers = {"time": "Computation time (s)", "aep": "AEP (10^6 GWh)"}
 
         # convergence plot
-        convergence_png = File()
-        with convergence_png.open_binary() as png:
-            png.write(base64.b64decode(convergence_png_serialized.encode()))
-        convergence_image = ImageResult(convergence_png)
+        convergence_png = deserialize(convergence_png_s)
+        # with convergence_png.open_binary() as png:
+        #     png.write(base64.b64decode(convergence_png_serialized.encode()))
 
         return OptimizationResult(
-            results, output_headers=output_headers, image=convergence_image
+            results, output_headers=output_headers, image=ImageResult(convergence_png)
         )

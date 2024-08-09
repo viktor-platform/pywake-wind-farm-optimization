@@ -37,7 +37,7 @@ from viktor.errors import UserError
 from viktor.geometry import GeoPoint, Point, Polygon, RDWGSConverter
 from viktor.utils import memoize
 
-from constants import ENCODING, IMAGE_DPI, get_divisors
+from constants import ENCODING, IMAGE_DPI, get_divisors, serialize
 from gwa_reader import get_gwc_data  # Global Wind Atlas API
 
 # wind turbines
@@ -214,9 +214,9 @@ def optimize_turbine_positions(
 
     # save optimized positions plot
     optimized_positions_ax.set_title("")
-    optimized_positions_png = io.BytesIO()
+    optimized_positions_png = File()
     optimized_positions_fig.savefig(
-        optimized_positions_png, format="png", dpi=IMAGE_DPI
+        optimized_positions_png.source, format="png", dpi=IMAGE_DPI
     )
     plt.close(optimized_positions_fig)
 
@@ -229,21 +229,15 @@ def optimize_turbine_positions(
         title=f"{n_wt} wind turbines, {n_wd} wind directions, {n_ws} wind speeds",
     )
     plt.ticklabel_format(useOffset=False)
-    convergence_png = io.BytesIO()
-    convergence_fig.savefig(convergence_png, format="pdf", dpi=IMAGE_DPI)
+    convergence_png = File()
+    convergence_fig.savefig(convergence_png.source, format="png", dpi=IMAGE_DPI)
     plt.close(convergence_fig)
 
     # make sure output is serializeable
     t = list(t)
     aep = list(aep)
-    optimized_positions_png.seek(0)
-    optimized_positions_png_s = base64.b64encode(optimized_positions_png.read()).decode(
-        encoding=ENCODING
-    )
-    convergence_png.seek(0)
-    convergence_png_s = base64.b64encode(optimized_positions_png.read()).decode(
-        encoding=ENCODING
-    )
+    optimized_positions_png_s = serialize(optimized_positions_png)
+    convergence_png_s = serialize(convergence_png)
 
     return (t, aep, convergence_png_s, optimized_positions_png_s)
 
