@@ -7,9 +7,8 @@ import py_wake
 import viktor as vkt
 
 from parametrization import Parametrization
-from constants import IMAGE_DPI, deserialize
-from wind_farm import SITE_MAXIMUM_AREA, SITE_MINIMUM_AREA, calculate_aep, calculate_loss, convert_to_points, get_buffer_bounds, get_initial_turbine_positions, \
-    get_wind_farm_model, get_windfarm_area, get_windfarm_boundary, get_windfarm_centroid_wgs, number_of_turbines, optimize_turbine_positions
+from wind_farm import SITE_MAXIMUM_AREA, SITE_MINIMUM_AREA, IMAGE_DPI, calculate_aep, calculate_loss, convert_to_points, get_buffer_bounds, get_initial_turbine_positions, \
+    get_wind_farm_model, get_windfarm_area, get_windfarm_boundary, get_windfarm_centroid_wgs, number_of_turbines, optimize_turbine_positions, deserialize
 
 
 class Controller(vkt.ViktorController):
@@ -39,9 +38,7 @@ class Controller(vkt.ViktorController):
                     + r"(km^2). "
                     + f"Required: {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA} (km^2)"
                 )
-            features += [
-                vkt.MapPolygon.from_geo_polygon(polygon),
-            ]
+            features += [vkt.MapPolygon.from_geo_polygon(polygon)]
             points = convert_to_points(params.assemble.polygon.points)
             lat, lon = get_windfarm_centroid_wgs(points)
             features += [vkt.MapPoint(lat, lon)]
@@ -57,16 +54,12 @@ class Controller(vkt.ViktorController):
         """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        windfarm = get_wind_farm_model(points, turbine_type)
+        windfarm = get_wind_farm_model(points, params.visualize.turbine)
 
         # wind rose plot
         fig = plt.figure()
         png = vkt.File()
-        _ = windfarm.site.plot_wd_distribution(
-            n_wd=params.conditions.number_wind_directions,
-            ws_bins=params.conditions.number_wind_speeds + 1,
-        )
+        _ = windfarm.site.plot_wd_distribution(n_wd=params.conditions.number_wind_directions, ws_bins=params.conditions.number_wind_speeds + 1)
 
         fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
@@ -81,29 +74,19 @@ class Controller(vkt.ViktorController):
         """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        turbine_spacing = params.visualize.turbine_spacing
 
         # wind farm model
-        windfarm = get_wind_farm_model(points, turbine_type)
+        windfarm = get_wind_farm_model(points, params.visualize.turbine)
 
         # initiliaze turbine positions
-        x, y = get_initial_turbine_positions(points, turbine_type, turbine_spacing)
-
-        # windspeed and direction
-        wind_direction = params.visualize.wind_direction
-        wind_speed = params.visualize.wind_speed
+        x, y = get_initial_turbine_positions(points, params.visualize.turbine, params.visualize.turbine_spacing)
 
         # simulation
-        windfarm_simulated = windfarm(x, y, wd=wind_direction, ws=wind_speed)
+        windfarm_simulated = windfarm(x, y, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
         # define flow map
         grid = py_wake.HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
-        flow_map = windfarm_simulated.flow_map(
-            grid=grid,
-            wd=params.visualize.wind_direction,
-            ws=params.visualize.wind_speed,
-        )
+        flow_map = windfarm_simulated.flow_map(grid=grid, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
         # wake plot
         fig = plt.figure()

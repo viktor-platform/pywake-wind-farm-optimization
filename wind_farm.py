@@ -1,3 +1,6 @@
+from pathlib import Path
+import base64
+
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -31,8 +34,10 @@ from topfarm.easy_drivers import EasyScipyOptimizeDriver
 from topfarm.plotting import XYPlotComp
 import viktor as vkt
 
-from constants import IMAGE_DPI, ROOT, get_divisors, serialize
 from gwa_reader import get_gwc_data  # Global Wind Atlas API
+
+# general
+IMAGE_DPI = 800
 
 # wind turbines
 TURBINES = ["V80 (2.0 MW)", "IEA37 (3.35 MW)", "DTU (10 MW)"]
@@ -45,13 +50,27 @@ TURBINE_CLASSES_DICT = {
 ROUGHNESS_INDEX = 0  # we assume a flat ground (reasonable for off-shore farms)
 WIND_MEASUREMENT_HEIGHT = 100.0  # m (for convenience we fix this height. Not accurate as turbine hub heights may vary)
 TURBULENCE_INTENSITY = 0.1
-WIND_BIN_NUMS = get_divisors(360)
+WIND_BIN_NUMS = [5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 36, 40, 45, 60, 72, 90, 120, 180, 360]
 SITE_MINIMUM_AREA = 1  # km^2
 SITE_MAXIMUM_AREA = 20  # km^2
-OPENMDAO_OUT_PATH = ROOT / "openmdao_checks.out"
+OPENMDAO_OUT_PATH = Path(__file__).parent.parent / "openmdao_checks.out"
 
 # optimization
 MAX_ITERATIONS = 20
+
+
+def serialize(file: vkt.File) -> str:
+    """
+    Encodes a File object to a base64-encoded string.
+    """
+    return base64.b64encode(file.getvalue_binary()).decode(encoding="utf-8")
+
+
+def deserialize(s: str) -> vkt.File:
+    """
+    Decodes a base64-encoded string to a File object.
+    """
+    return vkt.File.from_data(base64.b64decode(s.encode(encoding="utf-8")))
 
 
 def get_windfarm_area(params, **kwargs):
