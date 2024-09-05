@@ -1,28 +1,21 @@
-from os import chmod
+from pathlib import Path
+import base64
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-# Topfarm
 import xarray as xr
 from matplotlib.path import Path as MPLPath
 
-# openMDAO (patch logging function)
+# Overrides openMDAO Problem.check_config to suppress output to a file.
 from openmdao.core.problem import Problem
-
 original_check_config = Problem.check_config
-
-
 def check_config_alt(*args, **kwargs):
     """
     Overrides openMDAO Problem.check_config to suppress output to a file.
     """
     return original_check_config(*args, out_file=None, **kwargs)
-
-
 Problem.check_config = check_config_alt
 
-# PyWake
 from py_wake.examples.data.dtu10mw import DTU10MW
 from py_wake.examples.data.hornsrev1 import V80
 from py_wake.examples.data.iea37 import IEA37_WindTurbines
@@ -32,8 +25,6 @@ from py_wake.turbulence_models import CrespoHernandez
 from py_wake.utils.gradients import autograd
 from py_wake.utils.plotting import setup_plot
 from py_wake.wind_farm_models.wind_farm_model import WindFarmModel
-
-# Shapely
 from shapely.geometry import Polygon as ShapelyPolygon
 from topfarm._topfarm import TopFarmProblem
 from topfarm.constraint_components.boundary import XYBoundaryConstraint
@@ -41,15 +32,12 @@ from topfarm.constraint_components.spacing import SpacingConstraint
 from topfarm.cost_models.py_wake_wrapper import PyWakeAEPCostModelComponent
 from topfarm.easy_drivers import EasyScipyOptimizeDriver
 from topfarm.plotting import XYPlotComp
+import viktor as vkt
 
-# VIKTOR
-from viktor import File
-from viktor.errors import UserError
-from viktor.geometry import GeoPoint, Point, Polygon, RDWGSConverter
-from viktor.utils import memoize
+from gwa_reader import get_gwc_data  # Global Wind Atlas API
 
-from lib.constants import IMAGE_DPI, ROOT, get_divisors, serialize
-from lib.gwa_reader import get_gwc_data  # Global Wind Atlas API
+# general
+IMAGE_DPI = 800
 
 # wind turbines
 TURBINES = ["V80 (2.0 MW)", "IEA37 (3.35 MW)", "DTU (10 MW)"]
@@ -62,18 +50,29 @@ TURBINE_CLASSES_DICT = {
 ROUGHNESS_INDEX = 0  # we assume a flat ground (reasonable for off-shore farms)
 WIND_MEASUREMENT_HEIGHT = 100.0  # m (for convenience we fix this height. Not accurate as turbine hub heights may vary)
 TURBULENCE_INTENSITY = 0.1
-WIND_BIN_NUMS = get_divisors(360)
+WIND_BIN_NUMS = [5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 36, 40, 45, 60, 72, 90, 120, 180, 360]
 SITE_MINIMUM_AREA = 1  # km^2
 SITE_MAXIMUM_AREA = 20  # km^2
-OPENMDAO_OUT_PATH = ROOT / "openmdao_checks.out"
+OPENMDAO_OUT_PATH = Path(__file__).parent.parent / "openmdao_checks.out"
 
 # optimization
 MAX_ITERATIONS = 20
 
 
-#################
-# OUTPUT FIELDS #
-#################
+def serialize(file: vkt.File) -> str:
+    """
+    Encodes a File object to a base64-encoded string.
+    """
+    return base64.b64encode(file.getvalue_binary()).decode(encoding="utf-8")
+
+
+def deserialize(s: str) -> vkt.File:
+    """
+    Decodes a base64-encoded string to a File object.
+    """
+    return vkt.File.from_data(base64.b64decode(s.encode(encoding="utf-8")))
+
+
 def get_windfarm_area(params, **kwargs):
     """
     Calculates and returns the area of the wind farm based on the specified polygon.
@@ -151,9 +150,6 @@ def number_of_turbines(params, **kwargs):
         return get_number_of_turbines(points, turbine_type, turbine_spacing)
 
 
-#########
-# MODEL #
-#########
 def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
     """
     Sets up and returns a wind farm model based on the provided points and turbine type.
@@ -167,7 +163,7 @@ def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
     try:
         height_index = heights.index(WIND_MEASUREMENT_HEIGHT)
     except ValueError:
-        UserError("height not avalaible at this site, pick another site")
+        vkt.UserError("height not avalaible at this site, pick another site")
 
     # simplify stuff by choosing wind data from a specific height (not very accurate)
     f = wind_data.data_vars.get("frequency")[ROUGHNESS_INDEX].data
@@ -194,15 +190,13 @@ def get_wind_farm_model(points, turbine_type) -> WindFarmModel:
     return Blondel_Cathelain_2020(site, wind_turbine, turbulenceModel=CrespoHernandez())
 
 
-################
-# OPTIMIZATION #
-################
-@memoize
+@vkt.memoize
 def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     """
     Optimizes turbine positions in the wind farm and returns relevant data including
     timestamps, AEP values, and serialized plots of the optimized positions and convergence.
     """
+    print(points, turbine_type, turbine_spacing, maxiter)
     # wind farm model
     wind_farm = get_wind_farm_model(points, turbine_type)
     site = wind_farm.site
@@ -234,7 +228,7 @@ def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
 
     # save optimized positions plot
     optimized_positions_ax.set_title("")
-    optimized_positions_png = File()
+    optimized_positions_png = vkt.File()
     optimized_positions_fig.savefig(
         optimized_positions_png.source, format="png", dpi=IMAGE_DPI
     )
@@ -249,7 +243,7 @@ def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
         title=f"{n_wt} wind turbines, {n_wd} wind directions, {n_ws} wind speeds",
     )
     plt.ticklabel_format(useOffset=False)
-    convergence_png = File()
+    convergence_png = vkt.File()
     convergence_fig.savefig(convergence_png.source, format="png", dpi=IMAGE_DPI)
     plt.close(convergence_fig)
 
@@ -262,16 +256,7 @@ def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     return (t, aep, convergence_png_s, optimized_positions_png_s)
 
 
-def get_topfarm_problem(
-    wind_farm,
-    points,
-    turbine_type,
-    turbine_spacing,
-    plot_component,
-    grad_method=autograd,
-    maxiter=4,
-    n_cpu=1,
-) -> TopFarmProblem:
+def get_topfarm_problem(wind_farm, points, turbine_type, turbine_spacing, plot_component, grad_method=autograd, maxiter=4, n_cpu=1) -> TopFarmProblem:
     """
     Creates and returns a TopFarmProblem for optimizing wind turbine positions.
     """
@@ -300,10 +285,7 @@ def get_topfarm_problem(
     )
 
 
-##############
-# SUPPORTING #
-##############
-def get_windfarm_boundary(points):
+def get_windfarm_boundary(points: list[vkt.Point]):
     """
     Returns the boundary coordinates of the wind farm polygon.
     """
@@ -311,7 +293,7 @@ def get_windfarm_boundary(points):
     return polygon.exterior.xy
 
 
-def get_buffer_bounds(points: list[Point]):
+def get_buffer_bounds(points: list[vkt.Point]):
     """
     Returns the buffered (extended) bounds of the wind farm polygon.
     """
@@ -354,14 +336,14 @@ def get_initial_turbine_positions(points, turbine_type, turbine_spacing):
     return x[mask], y[mask]
 
 
-def get_windfarm_centered_polygon(points: list[Point]):
+def get_windfarm_centered_polygon(points: list[vkt.Point]):
     """
     Returns the wind farm polygon centered at the centroid of the provided points.
     """
     return ShapelyPolygon(get_windfarm_centered_points(points))
 
 
-def get_windfarm_centered_points(points: list[Point]):
+def get_windfarm_centered_points(points: list[vkt.Point]):
     """
     Centers the provided points around the centroid of the wind farm and returns them.
     """
@@ -379,22 +361,22 @@ def get_turbine_spacing(turbine_type, turbine_spacing):
     return diameter * turbine_spacing
 
 
-def get_windfarm_centroid_wgs(points: list[Point]):
+def get_windfarm_centroid_wgs(points: list[vkt.Point]):
     """
     Returns the centroid of the wind farm in WGS (World Geodetic System) coordinates.
     """
     centroid_rd = get_windfarm_centroid_rd(points)
-    return RDWGSConverter.from_rd_to_wgs(centroid_rd)
+    return vkt.RDWGSConverter.from_rd_to_wgs(centroid_rd)
 
 
-def get_windfarm_centroid_rd(points: list[Point]):
+def get_windfarm_centroid_rd(points: list[vkt.Point]):
     """
     Returns the centroid of the wind farm in RD (Rijksdriehoek) coordinates.
     """
-    return Polygon([Point(*point) for point in points]).centroid
+    return vkt.Polygon([vkt.Point(*point) for point in points]).centroid
 
 
-def convert_to_points(geo_points: list[GeoPoint]):
+def convert_to_points(geo_points: list[vkt.GeoPoint]):
     """
     Converts a list of GeoPoint objects to a list of RD coordinate points.
     """

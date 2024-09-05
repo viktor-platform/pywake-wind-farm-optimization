@@ -1,55 +1,21 @@
 from warnings import filterwarnings
-
 filterwarnings("ignore", category=DeprecationWarning)
 filterwarnings("ignore", category=RuntimeWarning)
 
 import matplotlib.pyplot as plt
+import py_wake
+import viktor as vkt
 
-# PyWake
-from py_wake import HorizontalGrid
-
-# VIKTOR
-from viktor import File, ViktorController
-from viktor.errors import UserError
-from viktor.result import ImageResult, OptimizationResult, OptimizationResultElement
-from viktor.views import (
-    DataGroup,
-    DataItem,
-    ImageAndDataResult,
-    ImageAndDataView,
-    ImageView,
-    MapPoint,
-    MapPolygon,
-    MapResult,
-    MapView,
-)
-
-from lib.constants import IMAGE_DPI, deserialize
-from lib.parametrization import Parametrization
-
-# wind farm model
-from lib.wind_farm import (
-    SITE_MAXIMUM_AREA,
-    SITE_MINIMUM_AREA,
-    calculate_aep,
-    calculate_loss,
-    convert_to_points,
-    get_buffer_bounds,
-    get_initial_turbine_positions,
-    get_wind_farm_model,
-    get_windfarm_area,
-    get_windfarm_boundary,
-    get_windfarm_centroid_wgs,
-    number_of_turbines,
-    optimize_turbine_positions,
-)
+from parametrization import Parametrization
+from wind_farm import SITE_MAXIMUM_AREA, SITE_MINIMUM_AREA, IMAGE_DPI, calculate_aep, calculate_loss, convert_to_points, get_buffer_bounds, get_initial_turbine_positions, \
+    get_wind_farm_model, get_windfarm_area, get_windfarm_boundary, get_windfarm_centroid_wgs, number_of_turbines, optimize_turbine_positions, deserialize
 
 
-class Controller(ViktorController):
-    label = "wind farm"
+class Controller(vkt.ViktorController):
+    label = "Wind farm"
     parametrization = Parametrization
 
-    @MapView("Site map", duration_guess=1)
+    @vkt.MapView("Site map", duration_guess=1)
     def site_location(self, params, **kwargs):
         """
         Displays the site location on a map. Validates the area of the site against the minimum
@@ -61,27 +27,25 @@ class Controller(ViktorController):
         if (polygon := params.assemble.polygon) is not None:
             area = get_windfarm_area(params)
             if area < SITE_MINIMUM_AREA:
-                raise UserError(
+                raise vkt.UserError(
                     f"Choose a larger site. Current: {area:.1f} "
                     + r"(km^2). "
                     + f"Required: {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA} (km^2)"
                 )
             if area > SITE_MAXIMUM_AREA:
-                raise UserError(
+                raise vkt.UserError(
                     f"Choose a smaller site. Current: {area:.1f}"
                     + r"(km^2). "
                     + f"Required: {SITE_MINIMUM_AREA} < A < {SITE_MAXIMUM_AREA} (km^2)"
                 )
-            features += [
-                MapPolygon.from_geo_polygon(polygon),
-            ]
+            features += [vkt.MapPolygon.from_geo_polygon(polygon)]
             points = convert_to_points(params.assemble.polygon.points)
             lat, lon = get_windfarm_centroid_wgs(points)
-            features += [MapPoint(lat, lon)]
+            features += [vkt.MapPoint(lat, lon)]
 
-        return MapResult(features)
+        return vkt.MapResult(features)
 
-    @ImageView("Wind rose", duration_guess=5)
+    @vkt.ImageView("Wind rose", duration_guess=5)
     def wind_rose(self, params, **kwargs):
         """
         Generates and displays a wind rose plot, showing the distribution of wind direction
@@ -90,22 +54,18 @@ class Controller(ViktorController):
         """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        windfarm = get_wind_farm_model(points, turbine_type)
+        windfarm = get_wind_farm_model(points, params.visualize.turbine)
 
         # wind rose plot
         fig = plt.figure()
-        png = File()
-        _ = windfarm.site.plot_wd_distribution(
-            n_wd=params.conditions.number_wind_directions,
-            ws_bins=params.conditions.number_wind_speeds + 1,
-        )  # TODO: add height option?
+        png = vkt.File()
+        _ = windfarm.site.plot_wd_distribution(n_wd=params.conditions.number_wind_directions, ws_bins=params.conditions.number_wind_speeds + 1)
 
         fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
-        return ImageResult(png)
+        return vkt.ImageResult(png)
 
-    @ImageAndDataView("Wake plot", duration_guess=5)
+    @vkt.ImageAndDataView("Wake plot", duration_guess=5)
     def wake_plot(self, params, **kwargs):
         """
         Simulates and displays the wake effects of the wind farm, showing the distribution
@@ -114,29 +74,19 @@ class Controller(ViktorController):
         """
         # gather data
         points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        turbine_spacing = params.visualize.turbine_spacing
 
         # wind farm model
-        windfarm = get_wind_farm_model(points, turbine_type)
+        windfarm = get_wind_farm_model(points, params.visualize.turbine)
 
         # initiliaze turbine positions
-        x, y = get_initial_turbine_positions(points, turbine_type, turbine_spacing)
-
-        # windspeed and direction
-        wind_direction = params.visualize.wind_direction
-        wind_speed = params.visualize.wind_speed
+        x, y = get_initial_turbine_positions(points, params.visualize.turbine, params.visualize.turbine_spacing)
 
         # simulation
-        windfarm_simulated = windfarm(x, y, wd=wind_direction, ws=wind_speed)
+        windfarm_simulated = windfarm(x, y, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
         # define flow map
-        grid = HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
-        flow_map = windfarm_simulated.flow_map(
-            grid=grid,
-            wd=params.visualize.wind_direction,
-            ws=params.visualize.wind_speed,
-        )
+        grid = py_wake.HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
+        flow_map = windfarm_simulated.flow_map(grid=grid, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
         # wake plot
         fig = plt.figure()
@@ -154,51 +104,42 @@ class Controller(ViktorController):
         plt.ylim(miny, maxy)
 
         # save and close
-        png = File()
+        png = vkt.File()
         fig.savefig(png.source, format="png", dpi=IMAGE_DPI)
         plt.close()
 
         # AEP, loss and number of turbines
-        data = DataGroup(
-            DataItem("AEP", value=calculate_aep(params), suffix="10^6 GWh"),
-            DataItem("Loss", value=calculate_loss(params), suffix="%"),
-            DataItem("Number of turbines", value=number_of_turbines(params)),
+        data = vkt.DataGroup(
+            vkt.DataItem("AEP", value=calculate_aep(params), suffix="10^6 GWh"),
+            vkt.DataItem("Loss", value=calculate_loss(params), suffix="%"),
+            vkt.DataItem("Number of turbines", value=number_of_turbines(params)),
         )
-        return ImageAndDataResult(png, data)
+        return vkt.ImageAndDataResult(png, data)
 
-    @ImageAndDataView("Optimized positions", duration_guess=5)
+    @vkt.ImageAndDataView("Optimized positions", duration_guess=5)
     def optimized_positions(self, params, **kwargs):
         """
         Optimizes and displays the positions of the wind turbines within the site.
         Also provides the optimized Annual Energy Production (AEP) and its percentage increase
         from the initial configuration.
         """
-        # gather params
-        points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        turbine_spacing = params.visualize.turbine_spacing
-
         # optimize positions
-        _, aep, _, optimized_positions_png_s = optimize_turbine_positions(
-            points,
-            turbine_type,
-            turbine_spacing,
-            maxiter=params.optimize.number_of_iterations,
-        )
+        points = convert_to_points(params.assemble.polygon.points)
+        _, aep, _, optimized_positions_png_s = optimize_turbine_positions(points, params.visualize.turbine, params.visualize.turbine_spacing, params.optimize.number_of_iterations)
 
         # save (increase of) AEP
         increase = (aep[-1] - aep[0]) / aep[0] * 100
         aep_data = {"aep": aep[-1] / 1e6, "increase": increase}
 
         # collect data group
-        aep_data_group = DataGroup(
-            DataItem(
+        aep_data_group = vkt.DataGroup(
+            vkt.DataItem(
                 "AEP (optimal)",
                 value=aep_data["aep"],
                 suffix="10^6 GWh",
                 number_of_decimals=2,
             ),
-            DataItem(
+            vkt.DataItem(
                 "AEP (increase)",
                 value=aep_data["increase"],
                 suffix="%",
@@ -207,10 +148,7 @@ class Controller(ViktorController):
         )
 
         optimized_positions_png = deserialize(optimized_positions_png_s)
-        return ImageAndDataResult(
-            optimized_positions_png,
-            aep_data_group,
-        )
+        return vkt.ImageAndDataResult(optimized_positions_png, aep_data_group)
 
     def optimization_routine(self, params, **kwargs):
         """
@@ -218,31 +156,15 @@ class Controller(ViktorController):
         tracking the computation time and the resulting Annual Energy Production (AEP).
         Returns an optimization result that includes a convergence info and plot.
         """
-        # gather data
-        points = convert_to_points(params.assemble.polygon.points)
-        turbine_type = params.visualize.turbine
-        turbine_spacing = params.visualize.turbine_spacing
-
         # optimize positions
-        t, aep, convergence_png_s, _ = optimize_turbine_positions(
-            points,
-            turbine_type,
-            turbine_spacing,
-            params.optimize.number_of_iterations,
-        )
+        points = convert_to_points(params.assemble.polygon.points)
+        t, aep, convergence_png_s, _ = optimize_turbine_positions(points, params.visualize.turbine, params.visualize.turbine_spacing, params.optimize.number_of_iterations)
 
         # convergence result elements
-        results = [
-            OptimizationResultElement(
-                params, {"time": round(_t - t[0], 2), "aep": round(_aep / 1e6, 3)}
-            )
-            for _t, _aep in zip(t, aep)
-        ]
+        results = [vkt.OptimizationResultElement(params, {"time": round(_t - t[0], 2), "aep": round(_aep / 1e6, 3)}) for _t, _aep in zip(t, aep)]
         output_headers = {"time": "Computation time (s)", "aep": "AEP (10^6 GWh)"}
 
         # convergence plot
         convergence_png = deserialize(convergence_png_s)
 
-        return OptimizationResult(
-            results, output_headers=output_headers, image=ImageResult(convergence_png)
-        )
+        return vkt.OptimizationResult(results, output_headers=output_headers, image=vkt.ImageResult(convergence_png))
