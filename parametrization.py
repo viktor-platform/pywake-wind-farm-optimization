@@ -92,7 +92,7 @@ Increasing this spacing reduces wake effects as well as the total number of turb
         """
     )
     visualize.turbine = vkt.OptionField("Type", options=TURBINES, default=TURBINES[0])
-    visualize.turbine_spacing = vkt.NumberField("Spacing", default=6, min=4, max=10, suffix="turbine diameters", variant="slider", step=1)
+    visualize.turbine_spacing = vkt.NumberField("Spacing", default=8, min=6, max=10, suffix="turbine diameters", variant="slider", step=1)
 
     optimize = vkt.Step( "Optimize turbine locations", views="optimized_positions", enabled=_polygon_selected)
     optimize.text = vkt.Text(

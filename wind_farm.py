@@ -40,7 +40,7 @@ from gwa_reader import get_gwc_data  # Global Wind Atlas API
 IMAGE_DPI = 800
 
 # wind turbines
-TURBINES = ["V80 (2.0 MW)", "IEA37 (3.35 MW)", "DTU (10 MW)"]
+TURBINES = ["DTU (10 MW)"]
 TURBINE_CLASSES = [V80, IEA37_WindTurbines, DTU10MW]
 TURBINE_CLASSES_DICT = {
     turbine: turbine_cls for turbine, turbine_cls in zip(TURBINES, TURBINE_CLASSES)
