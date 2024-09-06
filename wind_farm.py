@@ -196,7 +196,6 @@ def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     Optimizes turbine positions in the wind farm and returns relevant data including
     timestamps, AEP values, and serialized plots of the optimized positions and convergence.
     """
-    print(points, turbine_type, turbine_spacing, maxiter)
     # wind farm model
     wind_farm = get_wind_farm_model(points, turbine_type)
     site = wind_farm.site
@@ -216,7 +215,7 @@ def optimize_turbine_positions(points, turbine_type, turbine_spacing, maxiter):
     )
 
     # perform optimization routine
-    _, _, recorder = topfarm_problem.optimize(disp=False)
+    _, _, recorder = topfarm_problem.optimize()
 
     # convergence info
     t, aep = [recorder[v] for v in ["timestamp", "AEP"]]

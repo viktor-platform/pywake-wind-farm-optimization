@@ -84,8 +84,8 @@ class Controller(vkt.ViktorController):
         # simulation
         windfarm_simulated = windfarm(x, y, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
-        # define flow map
-        grid = py_wake.HorizontalGrid(x=None, y=None, resolution=300, extend=1.5)
+        # define flow map and use a low resolution to decrease calculation times (but also accuracy)
+        grid = py_wake.HorizontalGrid(x=None, y=None, resolution=50, extend=0.2)
         flow_map = windfarm_simulated.flow_map(grid=grid, wd=params.visualize.wind_direction, ws=params.visualize.wind_speed)
 
         # wake plot
